@@ -16,7 +16,7 @@ use vars qw( @ISA @EXPORT $VERSION );
               EscapeHTMLChars StripAttributes HTMLsubstr
               TrimOpenTags GetAttributeValue ExtractTables );
 
-$VERSION = 0.70;
+$VERSION = 0.72;
 
 use NewsClipper::Globals;
 
@@ -62,10 +62,10 @@ sub StripAttributes($@)
     $oldhtml = $html;
 
     # Strip out anything that matches the pattern inside a tag with ' quotes
-    $html =~ s#(<[^>]+?)\s*\b($pattern)\b\s*=\s*'[^']+'([^>]*>)#$1$3#sig;
+    $html =~ s#(<[^>]+?)\s*\b($pattern)\b\s*=\s*'[^']*'([^>]*>)#$1$3#sig;
 
     # Strip out anything that matches the pattern inside a tag with " quotes
-    $html =~ s#(<[^>]+?)\s*\b($pattern)\b\s*=\s*"[^"]+"([^>]*>)#$1$3#sig;
+    $html =~ s#(<[^>]+?)\s*\b($pattern)\b\s*=\s*"[^"]*"([^>]*>)#$1$3#sig;
 
     # Strip out anything that matches the pattern inside a tag without quotes
     $html =~ s#(<[^>]+?)\s*\b($pattern)\b\s*=\s*[^'"]\S*[^'"]([^>]*>)#$1$3#sig;
@@ -133,7 +133,8 @@ sub ExtractText($$$)
   my $startPattern = shift;
   my $endPattern = shift;
 
-  return undef unless defined $html;
+  return undef
+    unless defined $html && defined $startPattern && defined $endPattern;
 
   unless (UNIVERSAL::isa(\$html,'SCALAR') || UNIVERSAL::isa($html,'SCALAR'))
   {
@@ -421,7 +422,8 @@ sub GetAttributeValue($$$)
   my $tag = shift;
   my $attribute = shift;
 
-  return undef unless defined $html;
+  return undef
+    unless defined $html && defined $tag && defined $attribute;
 
   unless (UNIVERSAL::isa(\$html,'SCALAR') || UNIVERSAL::isa($html,'SCALAR'))
   {

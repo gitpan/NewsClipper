@@ -24,7 +24,7 @@ use strict;
 
 use Getopt::Long;
 use FileHandle;
-use LockFile::Simple;
+use File::Cache;
 
 use vars qw( %config %opts $VERSION $COMPATIBLE_CONFIG_VERSION $lock_manager );
 
@@ -40,7 +40,7 @@ sub dequote($;$);
 use vars qw(&dprint &reformat &dequote);
 
 # The version of the script
-$VERSION = do {my @r=(q$ 1.2.4 $=~/\d+/g);sprintf"%d."."%1d"x$#r,@r};
+$VERSION = do {my @r=(q$ 1.2.8 $=~/\d+/g);sprintf"%d."."%1d"x$#r,@r};
 
 # The version of configuration file that this version of News Clipper can use.
 $COMPATIBLE_CONFIG_VERSION = 1.21;
@@ -68,20 +68,27 @@ sub PrintDebugSummary(\@);
 print_usage() && exit(0) if $opts{h};
 
 # Set up the lockfile. SetupConfig() above created .NewsClipper, so we can
-# lock on that.
-$lock_manager = LockFile::Simple->make(-autoclean => 1, -nfs => 1,
-  -stale => 1, -warn => 0, -wfunc => undef, -efunc => undef,
-  -format => "$NewsClipper::Globals::home/.NewsClipper/lock");
-$lock_manager->lock("$NewsClipper::Globals::home/.NewsClipper")
-  or die reformat dequote<<"  EOF";
-    There is already another copy of News Clipper running. This copy of News
-    Clipper waited 60 seconds for the other copy to finish. Aborting. (You
-    should delete $NewsClipper::Globals::home/.NewsClipper/lock if you are
-    sure that no other News Clipper is running.)
-  EOF
+# lock on that. This feature can not be used in Windows because it doesn't
+# have fork()
+unless (($^O eq 'MSWin32') || ($^O eq 'dos'))
+{
+  require LockFile::Simple;
+  $lock_manager = LockFile::Simple->make('-autoclean' => 1, '-nfs' => 1,
+    '-stale' => 1, '-warn' => 0, '-wfunc' => undef, '-efunc' => undef,
+    '-format' => "$NewsClipper::Globals::home/.NewsClipper/lock");
+  $lock_manager->lock("$NewsClipper::Globals::home/.NewsClipper")
+    or die reformat dequote<<"    EOF";
+      There is already another copy of News Clipper running. This copy of News
+      Clipper waited 60 seconds for the other copy to finish. Aborting. (You
+      should delete $NewsClipper::Globals::home/.NewsClipper/lock if you are
+      sure that no other News Clipper is running.)
+    EOF
+}
 
 HandleProxyPassword();
 HandleClearCache();
+
+my $exit_value = 0;
 
 # Do timers unless we are in debug mode or on the broken Windows platform
 if (DEBUG || ($^O eq 'MSWin32') || ($^O eq 'dos'))
@@ -97,7 +104,7 @@ if (DEBUG || ($^O eq 'MSWin32') || ($^O eq 'dos'))
 }
 else
 {
-  $SIG{ALRM} = sub { die "timeout" };
+  $SIG{ALRM} = sub { die "newsclipper timeout" };
 
   eval
   {
@@ -116,7 +123,7 @@ else
   if ($@)
   {
     # See if it was our timeout
-    if ($@ =~ /timeout/)
+    if ($@ =~ /newsclipper timeout/)
     {
       die "News Clipper script timeout has expired. News Clipper killed.\n";
     }
@@ -128,11 +135,15 @@ else
       # the annoying ...propagated message. I don't know if this is the right
       # way to do this, but it works.)
       print STDERR $@;
-      exit 1;
+      $exit_value = 1;
     }
   }
-  exit 0;
 }
+
+$lock_manager->unlock("$NewsClipper::Globals::home/.NewsClipper")
+  if defined $lock_manager;
+
+exit $exit_value;
 
 #------------------------------------------------------------------------------
 
@@ -215,9 +226,12 @@ sub ProcessFiles()
 
       # Replace the output file with the temp file. Move it to .del for OSes
       # that have delayed deletes.
-      rename ($config{outputFiles}[$i], "$config{outputFiles}[$i].del");
       unlink ("$config{outputFiles}[$i].del");
-      rename ("$config{outputFiles}[$i].temp",$config{outputFiles}[$i]);
+      rename ($config{outputFiles}[$i], "$config{outputFiles}[$i].del");
+      rename ("$config{outputFiles}[$i].temp",$config{outputFiles}[$i])
+        or die "Could not rename $config{outputFiles}[$i].temp " .
+          "to $config{outputFiles}[$i]: $!";
+      unlink ("$config{outputFiles}[$i].del");
       chmod 0755, $config{outputFiles}[$i];
 
       FTP_File($config{outputFiles}[$i],$config{ftpFiles}[$i])
@@ -339,13 +353,22 @@ sub FTP_File()
 
 # ------------------------------------------------------------------------------
 
+sub get_exe_name
+{
+  my $exe_name = $0;
+  # Fix the $exe_name if it's the compiled version.
+  ($exe_name) = $ENV{sourceExe} =~ /([^\/\\]*)$/ if defined $ENV{sourceExe};
+
+  return $exe_name;
+}
+
+# ------------------------------------------------------------------------------
+
 # Prints the usage information
 
 sub print_usage()
 {
-  my $exeName = $0;
-  # Fix the $exeName if it's the compiled version.
-  ($exeName) = $ENV{sourceExe} =~ /([^\/\\]*)$/ if defined $ENV{sourceExe};
+  my $exeName = get_exe_name();
 
   my $version = "$VERSION, $config{product}";
 
@@ -359,8 +382,8 @@ sub print_usage()
   print dequote<<"  EOF";
     This is News Clipper version $version
 
-    usage: $exeName [-adnrv] [-i inputfile] [-o outputfile] [-c configfile]
-           [-e command]
+    usage: $exeName [-adnrvC] [-i inputfile] [-o outputfile]
+           [-c configfile] [-e command] [-H path]
 
     -i The template file to use as input (overrides value in configuration file)
     -o The output file (overrides value in configuration file)
@@ -370,8 +393,10 @@ sub print_usage()
     -n Check for new versions of the handlers
     -r Forces caching proxies to reload data
     -d Enable debug mode
+    -P Pause after completion
     -v Output to STDOUT in addition to the file. (Unix only.)
-    -C Clear the cache
+    -C Clear the cache, handler state, or News Clipper state
+    -H Set the user's home directory
   EOF
 }
 
@@ -393,7 +418,22 @@ sub SetupConfig()
     local @ARGV = @ARGV;
     Getopt::Long::Configure(
       qw(bundling noignore_case auto_abbrev prefix_pattern=-));
-    GetOptions(\%opts, qw(i:s o:s c:s e:s a h d n r v C));
+    GetOptions(\%opts, qw(i:s o:s c:s e:s a h d n r v P C H:s));
+
+    # Treat left-over arguments as -e arguments.
+    my $joined_args = join ",",@ARGV;
+    @ARGV = ('-e',$joined_args);
+    my %extra_opts;
+    GetOptions(\%extra_opts, qw(i:s o:s c:s e:s a h d n r v P C H:s));
+
+    if (defined $opts{e})
+    {
+      $opts{e} .= ",$extra_opts{e}";
+    }
+    else
+    {
+      $opts{e} = $extra_opts{e};
+    }
   }
 
   # We load the configuration, being careful not to use any of the stuff in
@@ -417,15 +457,18 @@ sub SetupConfig()
   $config{inputFiles} = [$opts{i}] if defined $opts{i};
   $config{outputFiles} = [$opts{o}] if defined $opts{o};
 
-  # Put the News Clipper module file location on @INC
-  push @INC,$config{modulepath}
-    if defined $config{modulepath} and -d $config{modulepath};
-
   # This should be in ValidateSetup, but we need to check it before slurping
   # in the NewsClipper::Globals. (We don't need modulepath in the compiled
   # version.)
-  die "\"modulepath\" in NewsClipper.cfg must be a directory.\n"
-    if !defined $ENV{sourceExe} && ! -d $config{modulepath};
+  foreach my $directory (split /\s+/,$config{modulepath})
+  {
+    die "\"$directory\" in modulepath setting of NewsClipper.cfg must be a directory.\n"
+      unless -d $directory;
+  }
+
+  # Put the News Clipper module file location on @INC
+  unshift @INC,split(/\s+/,$config{modulepath})
+    if defined $config{modulepath} && $config{modulepath} ne '';
 
   # Now we slurp in the global functions and constants.
   require NewsClipper::Globals;
@@ -443,13 +486,15 @@ sub SetupConfig()
   # To shut up the warning
   { my $dummy = $NewsClipper::Globals::cache; }
 
-  use File::Cache;
+  # Be sure to do a require here to load our own version of File::Cache.
+  # (Remove later when File::Cache supports persistence mechanism choice.)
   $NewsClipper::Globals::state = new File::Cache (
                { cache_key => "$NewsClipper::Globals::home/.NewsClipper/state",
                  namespace => 'NewsClipper',
                  username => '',
                  filemode => 0666,
                  auto_remove_stale => 0,
+                 persistence_mechanism => 'Data::Dumper',
                } );
   # To shut up the warning
   { my $dummy = $NewsClipper::Globals::state; }
@@ -752,7 +797,8 @@ sub GetHomeDirectory()
 {
   # Get the user's home directory. First try the password info, then the
   # registry (if it's a Windows machine), then any HOME environment variable.
-  my $home = eval { (getpwuid($>))[7] } || GetWinInstallDir() || $ENV{HOME};
+  my $home = $opts{H} || eval { (getpwuid($>))[7] } || 
+    GetWinInstallDir() || $ENV{HOME};
 
   # "s cause problems in Windows. Sometimes people set their home variable as
   # "c:\Program Files\NewsClipper", which causes when the path is therefore
@@ -891,14 +937,16 @@ sub PrintDebugSummary(\@)
 
   return unless DEBUG;
 
+  my $exe_name = get_exe_name();
+
   dprint "Operating system:\n  $^O";
   dprint "Version:\n  $VERSION, $config{product}";
-  dprint "Command line was:\n  $0 @ARGV";
+  dprint "Command line was:\n  $exe_name @ARGV";
   dprint "Options are:";
 
-  while (my ($k,$v) = each %opts)
+  foreach my $key (sort keys %opts)
   {
-    dprint "  $k: $v";
+    dprint "  $key: $opts{$key}";
   }
 
   dprint "\$ENV{NEWSCLIPPER}:\n";
@@ -1029,10 +1077,15 @@ sub CheckRegistration()
 
 sub HandleClearCache()
 {
+  use File::Path;
+
   if ($opts{C})
   {
-    print "Are you sure you want to clear the News Clipper cache? ";
-    my $response = <STDIN>;
+    my $response;
+
+    # Clear HTML cache
+    print "Do you want to clear the News Clipper HTML cache? ";
+    $response = <STDIN>;
 
     while ($response !~ /^[yn]/i)
     {
@@ -1040,9 +1093,45 @@ sub HandleClearCache()
       $response = <STDIN>;
     }
 
-    return unless $response =~ /^y/i;
+    if ($response =~ /^y/i)
+    {
+      rmtree (["$config{cachelocation}/html"]);
+    }
 
-    unlink <$config{cachelocation}/html/*>;
+    # Clear handler state
+    print "Do you want to clear the handler-specific data storage? ";
+    $response = <STDIN>;
+
+    while ($response !~ /^[yn]/i)
+    {
+      print "Yes or no? ";
+      $response = <STDIN>;
+    }
+
+    if ($response =~ /^y/i)
+    {
+      rmtree (["$NewsClipper::Globals::home/.NewsClipper/state/Acquisition"]);
+      rmtree (["$NewsClipper::Globals::home/.NewsClipper/state/Filter"]);
+      rmtree (["$NewsClipper::Globals::home/.NewsClipper/state/Output"]);
+    }
+
+    # Clear News Clipper state
+    print reformat "Do you want to clear News Clipper's data storage " .
+      "(which includes the times that handlers were last checked for updates)? ";
+    $response = <STDIN>;
+
+    while ($response !~ /^[yn]/i)
+    {
+      print "Yes or no? ";
+      $response = <STDIN>;
+    }
+
+    if ($response =~ /^y/i)
+    {
+      rmtree (["$NewsClipper::Globals::home/.NewsClipper/state/NewsClipper"]);
+    }
+
+    exit;
   }
 }
 
@@ -1140,6 +1229,14 @@ END
       dprint "  $key =>\n    $INC{$key}";
     }
   }
+
+  if ($opts{P})
+  {
+    $| = 1;
+    print "News Clipper has finished processing the input files.\n" .
+          "Press enter to continue...";
+    <STDIN>;
+  }
 }
 
 # ------------------------------------------------------------------------------
@@ -1159,7 +1256,6 @@ END
 #perl2exe_include Date/Format
 #perl2exe_include Net/NNTP
 #perl2exe_include File/Spec/Win32.pm
-#perl2exe_include Storable
 
 #-------------------------------------------------------------------------------
 
@@ -1294,6 +1390,11 @@ to always download bugfix versions, but not functional updates. This flag
 should only be used when News Clipper is run interactively, since functional
 updates can break web pages that rely on the older functionality.
 
+=item B<-P>
+
+Pause after News Clipper has completed execution. (This is useful when running
+News Clipper in a window that automatically closes upon program exit.)
+
 =item B<-r>
 
 Reload the content from the proxy server even on a cache hit. This prevents
@@ -1309,10 +1410,23 @@ Clipper. Output is sent to the screen instead of the output file.
 Verbose output. Output a copy of the information sent to the output file to
 standard output. Does not work on Windows or DOS.
 
+=item B<-H>
+
+Use the specified path as the user's home directory, instead of auto-detecting
+the path. This is useful for specifying the location of the .NewsClipper
+directory.
+
 =item B<-C>
 
-Clear the News Clipper cache. Clearing the cache significantly slows down News
-Clipper and increases network traffic on remote servers---use with care.
+Clear the News Clipper cache, handler-specific state, or News Clipper state.
+The cache contains information acquired by acquisition handlers.
+Handler-specific state is any information that handlers store between runs.
+News Clipper state is any information that News Clipper stores between runs,
+such as the last time a handler was checked for an update.
+
+Clearing the cache significantly slows down News Clipper and increases network
+traffic on remote servers---use with care. Similarly, clearing News Clipper
+state forces News Clipper to check for updates to handlers.
 
 =back
 
@@ -1358,7 +1472,10 @@ by all users.
 =item modulepath
 
 The location of News Clipper's modules, in case the aren't in the standard
-Perl module path. (Set during installation.)
+Perl module path. (Set during installation.) For pre-compiled versions of News
+Clipper, this setting also includes extra directories, separated by
+whitespace, which are paths in which to search for any additional Perl
+modules.
 
 =item cachelocation
 

@@ -12,10 +12,11 @@ use LWP::UserAgent;
 use File::Path;
 # For find
 use File::Find;
+use DBI;
 
 use vars qw( $VERSION );
 
-$VERSION = 0.86;
+$VERSION = 0.88;
 
 use NewsClipper::Globals;
 
@@ -822,11 +823,13 @@ sub _UnLoadHandler($)
   # Delete it from %INC
   delete $INC{"NewsClipper/Handler/$handler_type/$handler_name.pm"};
 
-  # Now undef each function
-  foreach my $symbol (keys %File::Cache::)
-  {
-    undef &{$File::Cache::{$symbol}} if defined &{$File::Cache::{$symbol}};
-  }
+  # Now undef the package
+  no strict 'refs';
+  my %oldconfig =
+    %{"NewsClipper::Handler::${handler_type}::${handler_name}::handlerconfig"};
+  Symbol::delete_package("NewsClipper::Handler::${handler_type}::${handler_name}::");
+  %{"NewsClipper::Handler::${handler_type}::${handler_name}::handlerconfig"} =
+    %oldconfig;
 }
 
 # ------------------------------------------------------------------------------
@@ -858,7 +861,7 @@ sub _LoadHandler($)
   {
     # Try to load it in $dir
     dprint "Looking for handler as:";
-    dprint "  NewsClipper::Handler::$dir\::$handler_name";
+    dprint "  NewsClipper::Handler::${dir}::$handler_name";
 
     # Here we need to store errors.
     my $errors;
@@ -903,7 +906,7 @@ sub _LoadHandler($)
       # for later printing.
       $errors{"handler#$handler_name"} = $errors if defined $errors;
 
-      return "found as NewsClipper::Handler::$dir\::$handler_name"
+      return "found as NewsClipper::Handler::${dir}::$handler_name"
     }
 
     # We can get here if the eval has a syntax error. (e.g. if someone tries
@@ -1045,6 +1048,107 @@ sub _GetHandlerCode($$)
 
 # ------------------------------------------------------------------------------
 
+my $dbh = undef;
+
+# Connect to the database, storing the DB connection in $dbh for the
+# duration of the run
+
+sub ConnectToDB
+{
+  return $dbh if defined $dbh;
+
+  local $SIG{ALRM} = sub { die "database timeout" };
+
+  my $numTriesLeft = $config{socketTries};
+
+  do
+  {
+    eval
+    {
+      alarm($config{socketTries});
+
+      $dbh = DBI->connect('DBI:mysql:handlers:handlers.newsclipper.com','webuser')
+        || die "Can't connect to database: $DBI::errstr";
+
+      alarm(0);
+    };
+
+    $numTriesLeft--;
+  } until ($numTriesLeft == 0 || defined $dbh);
+
+  alarm(0);
+}
+
+# ------------------------------------------------------------------------------
+
+# Disconnect from the database.
+
+sub DisconnectFromDB
+{
+  $dbh->disconnect() if defined $dbh;
+}
+
+# ------------------------------------------------------------------------------
+
+sub _GetTable
+{
+  my $version = shift;
+
+  my $table = $version;
+  $table =~ s/\./_/g;
+
+  return $table;
+}
+
+# ------------------------------------------------------------------------------
+
+# Computes the most recent version number for a working handler.
+# Returns undef if the handler can't be found.
+
+sub _GetLatestWorkingHandlerVersion
+{
+  my $handler_name = shift;
+  my $ncversion = shift;
+
+  my $table = _GetTable($ncversion);
+
+  my $query = qq{ SELECT Version FROM $table WHERE Name like '$handler_name'
+    and Status like 'Working'
+    ORDER BY Version DESC };
+
+dprint "_GetLatestWorkingHandlerVersion is doing query:";
+dprint "  ".$query;
+  return scalar $dbh->selectrow_array($query);
+}
+
+# ------------------------------------------------------------------------------
+
+# Computes the most recent guaranteed-compatible version number for a
+# workinghandler.  Returns undef if the handler can't be found.
+
+sub _GetCompatibleWorkingHandlerVersion
+{
+  my $handler_name = shift;
+  my $ncversion = shift;
+  my $version = shift;
+
+  my $table = _GetTable($ncversion);
+
+  # Truncate to two decimal places, and increment the hundredths place so we
+  # can query for < $version
+  my $lower_version = sprintf("%0.2f",int($version * 100)/100);
+  my $upper_version = sprintf("%0.2f",int($version * 100)/100 + .01);
+
+  my $query = qq{ SELECT Version FROM $table WHERE Name like '$handler_name'
+    and Status like 'Working'
+    and Version < $upper_version and Version >= $lower_version
+    ORDER BY Version DESC };
+
+  return scalar $dbh->selectrow_array($query);
+}
+
+# ------------------------------------------------------------------------------
+
 # Checks if a new version of the handler is available, taking consideration of
 # -n flag into account.
 # Params:
@@ -1058,10 +1162,14 @@ sub _GetHandlerCode($$)
 #    if $needBugfix == 0, type can be either bugfix or functional.
 #    if $needBugfix == 1, type can be only bugfix.
 
+my $alreadyFailed = 0;
+
 sub _GetNewHandlerVersion($$)
 {
   my $handler_name = shift;
   my $needBugfix = shift;
+
+  return 'failed' if $alreadyFailed;
 
   dprint "Checking for a new version for handler \"$handler_name\"";
 
@@ -1069,31 +1177,40 @@ sub _GetNewHandlerVersion($$)
   # regardless of functional compatibility.
   my $localVersion = _GetLocalHandlerVersion($handler_name);
 
-  my $url = "http://" . $HANDLER_SERVER .
-    "/cgi-bin/checkversion?tag=$handler_name&ncversion=$main::VERSION";
+dprint "LocalVersion:$localVersion" if defined $localVersion;
 
-  # Server assumes no version param means get most recent version
-  $url .= "&version=$localVersion" if defined $localVersion;
+  ConnectToDB();
 
-  if ($needBugfix eq 'bugfix')
+  unless (defined $dbh)
   {
-    $url .= "&debug=1";
-  }
-  else
-  {
-    $url .= "&debug=0";
+dprint "Connect failed";
+    $alreadyFailed = 1;
+    return 'failed';
   }
 
-  my $data = _DownloadURL($url);
-  return 'failed' unless defined $data;
-
-  if ($$data =~ /^Handler not found/)
+dprint "Connect succeeded";
+  unless (defined _GetLatestWorkingHandlerVersion($handler_name,$COMPATIBLE_NEWS_CLIPPER_VERSION))
   {
     dprint "Server reports that handler \"$handler_name\" doesn't exist.\n";
     return 'not found';
   }
 
-  if ($$data =~ /^No new version available/)
+  my $newVersion;
+
+  if ($needBugfix eq 'bugfix')
+  {
+    $newVersion = _GetCompatibleWorkingHandlerVersion($handler_name,
+      $COMPATIBLE_NEWS_CLIPPER_VERSION, $localVersion);
+dprint "_GetCompatibleWorkingHandlerVersion got: $newVersion";
+  }
+  else
+  {
+    $newVersion = _GetLatestWorkingHandlerVersion($handler_name,$COMPATIBLE_NEWS_CLIPPER_VERSION);
+dprint "_GetLatestWorkingHandlerVersion got: $newVersion";
+  }
+
+  if (!defined $newVersion ||
+     ( defined $localVersion && $newVersion <= $localVersion))
   {
     dprint "No new version is available";
     return 'no update';
@@ -1101,8 +1218,6 @@ sub _GetNewHandlerVersion($$)
 
   # We actually got a version
   my $updateType;
-
-  my ($newVersion) = $$data =~ /(\S+)/;
 
   if (defined $localVersion)
   {
@@ -1137,6 +1252,9 @@ sub _DownloadURL($)
 {
   my $url = shift;
 
+  dprint "Downloading URL:";
+  dprint "  $url";
+
   $userAgent->timeout($config{socketTimeout});
   $userAgent->proxy(['http', 'ftp'], $config{proxy})
     if $config{proxy} ne '';
@@ -1164,6 +1282,13 @@ sub _DownloadURL($)
   $content =~ s/\r//gs;
 
   return \$content;
+}
+
+END
+{
+  DisconnectFromDB();
+
+dprint "disconnected";
 }
 
 1;

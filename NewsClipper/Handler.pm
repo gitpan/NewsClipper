@@ -7,6 +7,7 @@ package NewsClipper::Handler;
 use strict;
 use Carp;
 use Exporter;
+use File::Cache;
 
 use vars qw( $VERSION @ISA @EXPORT );
 
@@ -28,7 +29,7 @@ use NewsClipper::Types;
            @NewsClipper::AcquisitionFunctions::EXPORT,
            'NewsClipper::Interpreter::RunHandler');
 
-$VERSION = 0.42;
+$VERSION = 0.44;
 
 # ------------------------------------------------------------------------------
 
@@ -71,8 +72,6 @@ sub new
   my $cache_key =
     "$NewsClipper::Globals::home/.NewsClipper/state/$handlerType";
 
-  use File::Cache;
-
   # Set up the handler's state
   $self->{'state'} = new File::Cache (
         { cache_key => $cache_key,
@@ -80,6 +79,7 @@ sub new
           username => '',
           filemode => 0666,
           auto_remove_stale => 0,
+          persistence_mechanism => 'Data::Dumper',
         } );
 
   return $self;

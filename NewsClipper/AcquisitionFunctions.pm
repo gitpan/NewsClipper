@@ -17,7 +17,7 @@ use vars qw( @ISA @EXPORT $VERSION );
 @ISA = qw( Exporter );
 @EXPORT = qw(GetUrl GetHtml GetImages GetLinks GetText);
 
-$VERSION = 0.65;
+$VERSION = 0.66;
 
 use NewsClipper::Globals;
 
@@ -219,7 +219,8 @@ sub GetText($$$)
 
   my $html = GetUrl($url);
 
-  return unless defined $html;
+  return unless
+    defined $html && defined $startPattern && defined $endPattern;
 
   $html = $$html;
 
@@ -289,7 +290,8 @@ sub GetHtml($$$)
 
   my $html = &GetUrl($url);
 
-  return unless defined $html;
+  return unless
+    defined $html && defined $startPattern && defined $endPattern;
 
   $html = $$html;
 
@@ -342,7 +344,8 @@ sub GetImages($$$)
 
   my $html = &GetUrl($url);
 
-  return unless defined $html;
+  return unless
+    defined $html && defined $startPattern && defined $endPattern;
 
   $html = $$html;
 
@@ -438,7 +441,8 @@ sub GetLinks($$$)
 
   my $html = &GetUrl($url);
 
-  return unless defined $html;
+  return unless
+    defined $html && defined $startPattern && defined $endPattern;
 
   $html = $$html;
 

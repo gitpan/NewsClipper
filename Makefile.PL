@@ -16,6 +16,10 @@ my $SOURCE_DIR = '.';
 # postamble (which doesn't take arguments, so this has to be a global).
 my $newsclipper_cfg_path;
 
+# The value to use for the modulepath. This will be the NewsClipper module
+# directory, plus any standard perl @INC for the compiled versions
+my $modulepath;
+
 # Computed by Setup_Install_Unix(). Used by postamble (which doesn't take
 # arguments, so this has to be a global).
 my $install_type;
@@ -65,9 +69,8 @@ sub GetVersion
 
 sub Setup_Dist
 {
-  $VERSION .= '-os' if $ARGV[0] eq 'opensource';
-  $VERSION .= '-pl' if $ARGV[0] eq 'perl';
-  $VERSION .= '-un' if $ARGV[0] eq 'unix';
+  $VERSION .= '-OpenSource' if $ARGV[0] eq 'opensource';
+  $VERSION .= '-Perl' if $ARGV[0] eq 'perl';
 }
 
 # --------------------------------------------------------------------------
@@ -82,22 +85,27 @@ sub Setup_Install
 
   if (($^O eq 'dos') || ($^O eq 'MSWin32'))
   {
-    ($timezone,$newsclipper_cfg_path,$install_dir,$install_man_dir) =
-      Setup_Install_Windows();
+    ($timezone,$newsclipper_cfg_path,$install_dir,$install_man_dir,
+      $modulepath) = Setup_Install_Windows();
     $install_type = undef;
   }
   else
   {
-    ($newsclipper_cfg_path,$install_type,$install_dir,$install_man_dir) =
-      Setup_Install_Unix();
+    ($newsclipper_cfg_path,$install_type,$install_dir,$install_man_dir,
+      $modulepath) = Setup_Install_Unix();
     $timezone = undef;
   }
 
   unless (defined $install_type && $install_type eq 'system')
   {
-    push @ARGV,'INSTALLDIRS=perl';
+    push @ARGV,'INSTALLDIRS=site';
     push @ARGV,"PREFIX=$install_dir";
-    push @ARGV,"INSTALLMAN1DIR=$install_man_dir";
+    push @ARGV,"INSTALLMAN1DIR=$install_man_dir/man1";
+    push @ARGV,"INSTALLMAN3DIR=$install_man_dir/man3";
+    # Some systems need all this junk
+    push @ARGV,"INSTALLARCHLIB=$install_dir/lib";
+    push @ARGV,"INSTALLSITELIB=$install_dir/lib";
+    push @ARGV,"INSTALLPRIVLIB=$install_dir/lib";
   }
 
   print<<EOF;
@@ -114,7 +122,7 @@ EOF
 
 sub Setup_Install_Windows
 {
-  my ($timezone,$install_dir) = Get_Windows_Install_Info();
+  my ($timezone,$install_dir,$module_path) = Get_Windows_Install_Info();
 
   # Put the installation directory in the registry
   WriteRegistry($install_dir,$VERSION);
@@ -123,7 +131,7 @@ sub Setup_Install_Windows
   my $newsclipper_cfg_path = Find_NewsClipper_cfg($install_dir);
 
   return ($timezone,$newsclipper_cfg_path,$install_dir,
-    "$install_dir/man/man1");
+    "$install_dir/man");
 }
 
 # --------------------------------------------------------------------------
@@ -194,7 +202,7 @@ EOF
 
 sub Get_Windows_Install_Info
 {
-  my ($timezone,$install_dir);
+  my ($timezone,$install_dir,$module_path);
 
   # Get the time zone
   print<<EOF;
@@ -234,19 +242,21 @@ EOF
 
 sub Setup_Install_Unix
 {
-  my ($install_dir,$install_man_dir,$install_type) = Get_Unix_Install_Info();
+  my ($install_dir,$install_man_dir,$install_type,$module_path) =
+    Get_Unix_Install_Info();
 
   # Figure out if there is already a NewsClipper.cfg
   my $newsclipper_cfg_path = Find_NewsClipper_cfg($install_dir,$install_type);
 
-  return ($newsclipper_cfg_path,$install_type,$install_dir,$install_man_dir);
+  return ($newsclipper_cfg_path,$install_type,$install_dir,$install_man_dir,
+    $module_path);
 }
 
 # --------------------------------------------------------------------------
 
 sub Get_Unix_Install_Info
 {
-  my ($install_dir,$install_type,$install_man_dir);
+  my ($install_dir,$install_type,$install_man_dir,$module_path);
 
   print <<EOF;
 Are you installing News Clipper as a [1] single user or [2] system-wide?
@@ -272,13 +282,26 @@ EOF
 
     print "\n","-"x78,"\n";
     print "Where would you like to install the man pages?\n";
-    print "=> [$install_dir/man/man1] ";
+    print "=> [$install_dir/man] ";
     $install_man_dir = <STDIN>;
     chomp $install_man_dir;
-    $install_man_dir = "$install_dir/man/man1" if $install_man_dir eq '';
+    $install_man_dir = "$install_dir/man" if $install_man_dir eq '';
 
-    # Skip modulepath with compiled versions
-    unless (-d 'bin')
+    # There is no News Clipper module path for compiled versions. Instead
+    # we have to add @INC to modulepath
+    if (-d 'bin')
+    {
+      print "\n","-"x78,"\n";
+      print<<EOF;
+
+Since you're doing a binary installation, I'm going to append your standard
+Perl include path to modulepath in NewsClipper's configuration file,
+which will allow News Clipper to see any additional modules you install in
+your normal Perl module locations.
+EOF
+      $module_path = "@INC";
+    }
+    else
     {
       print "\n","-"x78,"\n";
       print<<EOF;
@@ -289,15 +312,36 @@ something like $install_dir/lib/perl5/5.00502.)
 This is so that you don't have to change your PERL5LIB variable, or run News
 Clipper using "perl -I".
 EOF
+
+      $module_path = '$(INSTALLPRIVLIB)';
     }
   }
   else
   {
     $install_type = 'system';
     require Config;
+
+    # There is no News Clipper module path for compiled versions. Instead
+    # we have to add @INC to modulepath
+    if (-d 'bin')
+    {
+      print "\n","-"x78,"\n";
+      print<<EOF;
+
+Since you're doing a binary installation, I'm going to append your standard
+Perl include path to modulepath in NewsClipper's configuration file,
+which will allow News Clipper to see any additional modules you install in
+your normal Perl module locations.
+EOF
+      $module_path = "@INC";
+    }
+    else
+    {
+      $module_path = '';
+    }
   }
 
-  return ($install_dir,$install_man_dir,$install_type);
+  return ($install_dir,$install_man_dir,$install_type,$module_path);
 }
 
 # --------------------------------------------------------------------------
@@ -416,8 +460,10 @@ sub Compute_Makefile_Attributes
       'PREREQ_PM' => { 'HTML::Parser' => 2.06, 'HTML::FormatText' => 0,
                        'Time::ParseDate' => 0,
                        'Time::CTime' => 0,
-                       'File::Cache' => 0.09,
+                       'File::Cache' => 0.10,
+                       'File::Spec' => 0.82,
                        'HTML::TreeBuilder' => 0, 'URI' => 1.0, 'LWP' => 5.15,
+                       'LockFile::Simple' => 0,
                        'Storable' => 0},
     );
   }
@@ -495,26 +541,18 @@ sub MY::postamble
 	perl -MExtUtils::Command -e "chmod(0666,'$cfg_file')"; \\
   EOF
 
-  # If we are installing system-wide on Unix, or it's the Unix compile
-  # version, we don't need to set the modulepath
-  unless ((!(($^O eq 'dos') || ($^O eq 'MSWin32')) && ($install_type eq 'system'))
-      || (-d 'bin'))
-  {
-    $returnText .=<<"    EOF";
+  # Set the modulepath
+  $returnText .=<<"  EOF";
 	echo '  Setting modulepath in $cfg_file...'; \\
-	perl -ibak -pe "s|'modulepath' => '.*'|'modulepath' => '\$(INSTALLPRIVLIB)'|" "$cfg_file"; \\
+	perl -ibak -pe "s|'modulepath' => '.*'|'modulepath' => '$modulepath'|" "$cfg_file"; \\
 	perl -MExtUtils::Command -e "rm_f('${cfg_file}bak')"; \\
-    EOF
+  EOF
 
-    if (-e "$home/.NewsClipper/NewsClipper.cfg")
-    {
-      $returnText .=<<"      EOF";
+  $returnText .=<<"  EOF";
 	echo '  Setting modulepath in $home/.NewsClipper/NewsClipper.cfg...'; \\
-	perl -ibak -pe "s|'modulepath' => '.*'|'modulepath' => '\$(INSTALLPRIVLIB)'|" "$home/.NewsClipper/NewsClipper.cfg"; \\
+	perl -ibak -pe "s|'modulepath' => '.*'|'modulepath' => '$modulepath'|" "$home/.NewsClipper/NewsClipper.cfg"; \\
 	perl -MExtUtils::Command -e "rm_f('$home/.NewsClipper/NewsClipper.cfgbak')"; \\
-      EOF
-    }
-  }
+  EOF
 
   return $returnText;
 }

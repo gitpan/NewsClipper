@@ -1,3 +1,43 @@
+New in version 1.28:
+- New handler check now uses direct database connection instead of CGI
+  scripts. (Five times faster)
+- The lockfile is now explicitly cleaned up. (May help prevent stale locks.)
+- Added -H flag to override home directory location
+- Modified -C flag to remove handler-specific state and News Clipper state,
+  and to exit immediately afterwards
+- Fixed a URL handling bug in ConvertHandler
+- Added check in ConvertHandler to suggest that RunHandler be used instead of
+  NewsClipper::HandlerFactory::Create
+- News Clipper should now only remove the old output file if the new one was
+  created successfully.
+- modulepath can now contain multiple paths separated by whitespace
+- Fixed a bug where a newly downloaded handler update would not reload
+  correctly.
+- StripAttributes bug fixed: now recognizes attributes with empty quotes like
+  alt=""
+- Arguments to News Clipper are now treated as -e commands. This allows
+  "NewsClipper slashdot" to be run to fetch and print slashdot headlines.
+- Debug output now correctly says the script name is "NewsClipper" instead of
+  "NewsClipper2" (on compiled versions)
+- Compiled versions now have the default @INC set in modulepath during
+  installation, allowing NC to find externally installed Perl modules.
+
+New in version 1.27:
+- Modified NewsClipper.cfg to use a local URL for the imagecache to help News
+  Clipper work "out of the box"
+- Cause of "undefined value in File::Cache" bug found and repaired
+
+New in version 1.26:
+- Added -P flag to pause after completion.
+
+New in version 1.25:
+- Added LOCAL_TIME_ZONE option to timezone specifications, which causes the
+  local time zone to be used. (Thanks to Gerhard Wiesinger
+  <e9125884@student.tuwien.ac.at> for the suggestion and reminder to implement
+  this feature.)
+- Re-implemented caching to use a different persistence mechanism. (This
+  should finally squash the dreaded undefined value in File::Cache error.)
+
 New in version 1.24:
 - Added a lockfile (~/.NewsClipper/lock) that prevents more than one copy of
   News Clipper from running at the same time. (LockFile::Simple module now
@@ -21,6 +61,7 @@ New in version 1.23:
 New in version 1.22:
 - Added a check to make sure that an incompatible handler will not be loaded
   and used.
+- Improved error reporting during replacement of old output file with new one.
 
 New in version 1.21:
 - Fixed a bug in error message reporting

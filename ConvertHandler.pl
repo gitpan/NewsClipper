@@ -5,7 +5,7 @@
 use strict;
 
 my $COMPATIBLE_NEWS_CLIPPER_VERSION = '1.18';
-my $VERSION = 0.12;
+my $VERSION = 0.14;
 my $handlerserver = 'handlers.newsclipper.com';
 #my $handlerserver = 'localhost';
 
@@ -748,6 +748,30 @@ references as "Slashdot" as you insert them into the array.
     EOF
   }
 
+  print<<'  EOF'
+Your handler appears to use HandlerFactory to call another handler. While this
+will work, you should replace it with the new RunHandler technique in order
+to take advantage of type checking and other features. For example, replace:
+
+  # Put together some attributes to use when calling the cacheimages handler
+  my $newAttributes = { 'maxage' => 15 * 60 * 60 };
+
+  my $handlerFactory = new NewsClipper::HandlerFactory;
+
+  # Ask the HandlerFactory to create a handler for us, based on the name.
+  my $handler = $handlerFactory->Create('cacheimages');
+
+  my $cachedimage = $handler->Filter($newAttributes,$links[0]);
+
+with:
+
+  # Put together some attributes to use when calling the cacheimages handler
+  my $newAttributes = { 'maxage' => 15 * 60 * 60 };
+
+  my $cachedimage = RunHandler('cacheimages','filter',$links[0],$newAttributes);
+  EOF
+    if $code =~ /handlerFactory->Create/;
+
   return $code;
 }
 
@@ -807,7 +831,7 @@ sub ComputeURL
 
     EOF
 
-    if ($subCode =~ /my \$url = (['"][^'"]+['"])/s)
+    if ($subCode =~ /my \$url = (['"][^'"]+['"])\s*;/s)
     {
       my $url = $1;
       $subCode =~ s/my\s+\$url\s*=\s*.*?;/my \$url = \$self->ComputeURL(\$attributes);/s;
@@ -898,16 +922,16 @@ sub ProcessAttributes
       /\n( *\$attributes->{[^}]+}\s=\s[^;]+\sif !defined[^;]+\$attributes[^;]+;\n)/s)
     {
       my $setdefault = $1;
-      $subCode =~ s/\Q\s+$setdefault\E/\n/s;
-      $addedCode =~ s/\n(\s+return \$attributes)/$setdefault$1/s;
+      $subCode =~ s/\s+\Q$setdefault\E/\n/s;
+      $addedCode =~ s/\n(\s+return \$attributes)/\n$setdefault$1/s;
     }
 
     while ($subCode =~
       /\n( *\$attributes->{[^}]+}\s=\s[^;]+\sunless\sdefined[^;]+\$attributes[^;]+;\n)/s)
     {
       my $setdefault = $1;
-      $subCode =~ s/\Q\s+$setdefault\E/\n/s;
-      $addedCode =~ s/\n(\s+return \$attributes)/$setdefault$1/s;
+      $subCode =~ s/\s+\Q$setdefault\E/\n/s;
+      $addedCode =~ s/\n(\s+return \$attributes)/\n$setdefault$1/s;
     }
 
     $code =~ s/\Q$storedSubCode\E/$addedCode$subCode/s;

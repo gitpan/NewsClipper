@@ -7,12 +7,14 @@ use strict;
 # To parse dates
 use Time::CTime;
 use Time::ParseDate;
+# To get the local time zone
+use POSIX ();
 use File::Cache;
 
 use vars qw( $VERSION @ISA );
 
 @ISA = qw(File::Cache);
-$VERSION = 0.33;
+$VERSION = 0.34;
 
 use NewsClipper::Globals;
 
@@ -27,7 +29,9 @@ sub new
                                    username => '',
                                    filemode => 0666,
                                    auto_remove_stale => 0,
-                                   max_size => $config{maxcachesize} });
+                                   max_size => $config{maxcachesize},
+                                   persistence_mechanism => 'Data::Dumper',
+                                 });
 
   return $self;
 }
@@ -150,6 +154,10 @@ sub _Outdated($$)
     # If they didn't specify a timezone, it's pacific (in recognition of the
     # multitude of internet companies in California)
     $timezone = 'PST' if $timezone eq '';
+
+    # Set the timezone for the current timezone if LOCAL_TIME_ZONE is specified
+    $timezone = POSIX::strftime("%Z",localtime)
+      if $timezone eq 'LOCAL_TIME_ZONE';
 
     # Now iterate through each hour in the list, looking for the most recent
     # update hour.
