@@ -37,7 +37,7 @@ the handler, which will then be installed and available for later.
 <!--newsclipper
   <input name=yahootopstories source=ap>
   <filter name=map filter=hash2string 
-           format='<a href="%{url}">%{headline}</a>'>>
+           format='<a href="%{url}">%{headline}</a>'>
   <filter name=limit number=10>
   <output name=array numcols=1>
 -->

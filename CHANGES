@@ -1,3 +1,123 @@
+New in version 1.23:
+- Fixed MakeHandler.pl so that it doesn't insert comment characters ("#") into
+  the syntax information. (bugfix)
+
+New in version 1.22:
+- Added a check to make sure that an incompatible handler will not be loaded
+  and used.
+
+New in version 1.21:
+- Fixed a bug in error message reporting
+- Expanded the arguments to the handler subroutines ProcessAttributes,
+  FilterType, OutputType, GetUpdateTimes, and GetDefaultHandlers, providing
+  attribute information and data. [This should be backwards compatible with
+  existing handlers which do not expect or use the new data.]
+- Fixed a bug where a newly downloaded update to a handler would not be used
+  until the next execution of News Clipper.
+- Added use of socketTries through more of the code (not just when fetching
+  remote data).
+- Added "forNewsClipperVersion" attribute to NewsClipper.cfg
+- Updated ConvertHandler and ConvertConfig to detect the version of the
+  handler or NewsClipper.cfg, and only apply the changes that are necessary to
+  bring it up to the current version.
+- Added FTP code which somehow didn't get into version 1.20.
+- Added support for type names containing spaces.
+
+New in version 1.20:
+- Support for FTPing output files (Thanks to Rob Saunders for the suggestion.)
+  This allows users who don't have shell access to their web server to run
+  News Clipper on a local machine, and send the output files to the web
+  server.
+- News Clipper will check last modified dates before downloading content from
+  the remote server.
+- Fixed bug where <? ... > directives were stripped out erroneously. (Thanks
+  to Kwon Soon Son <kss@kldp.org> for the bug report.)
+- Improved image caching.
+- Fixed a bug in HTMLTools::StripAttributes. (Thanks to Paco Hope
+  <paco@paco.to> for finding the bug.)
+- New "lastupdated" handler gets time data was last updated for a News Clipper
+  input command.
+- New "dumpdata" output handler will dump the type signature and values
+  for the data.
+- <!-- newsclipper startcomment --> ... <!-- newsclipper endcomment --> can
+  now be used to mark blocks of HTML that will be removed from the output
+  during processing. This is useful for putting "dummy" content right after a
+  News Clipper command during input file design to take up space.
+- News Clipper now checks that remote content has changed before downloading
+  information that has expired from the cache.
+- Added -C flag to clear the News Clipper cache.
+- Reworked cache to use File::Cache module. (This should fix problems related
+  to missing cache files.)
+- Restructured the code to make it more understandable. Commented every
+  function. 
+- Added "socketTries" option to configuration, which specifies the number of
+  times News Clipper should try to get data from the server before giving up.
+  This defaults to 3. (Implemented by Ludovic Drolez <ldrolez@usa.net>)
+- Modified GetHtml, GetLinks, and GetImages to generate correct links when the
+  source web page uses <base href="..."> (Thanks to Dominique ROUSSEAU
+  <rousseau@neuronnexion.fr> for the initial implementation.)
+- Fixed a couple (more) bugs in the "check if the cached data needs to be
+  updated" function.
+- Improved error message reporting.
+- Added versioning information to prevent accidental download of handlers that
+  can break the input files.
+- Handler-specific configuration information is now separated in the
+  NewsClipper.cfg file.
+- ConvertConfig-1.20.pl and ConvertHandler-1.20.pl help to convert config
+  files and handler to the new style.
+- Fixed a bug in HTMLsubstr
+- Significantly improved API for handler writers:
+  - Each handler has its own configuration information in the user's
+    NewsClipper.cfg file. This information can be accessed from within the
+    handler through the %handlerconfig hash.
+  - The comment block has been replaced with a hash, which will help with the
+    automated processing of the handler.
+  - "Maintainer_Name", "Maintainer_Email", and "Language" fields have been
+    added.
+  - A new "CATEGORY" field says what category the handler belongs. 
+  - A new "FOR NEWSCLIPPER VERSION" field tells what version of News Clipper
+    the handler was built for. This helps accidental download of incompatible
+    handlers.
+  - Version numbers have been updated so that you can indicate when a change
+    will break people's input files, when a change adds functionality, and
+    when a change fixes a bug.
+  - You can save values between runs using $self->{'state'}, which is just a
+    File::Cache object. ($self->{'state'}->set('key','value'), then
+    $self->{'state'}->get('key'))
+  - Types have changed substantially:
+    - FilterType and OutputType return a "type signature", like "@($ | %)",
+      which means "an array of either scalars or hashes". @($ & %Slashdot)
+      means an array of at least one scalar and at least one Slashdot hash.
+    - A hunk of data matches a type signature if the structure matches, and
+      any subtype relationships hold. For example, a type signature of @($ |
+      %) would be matched by a data strcuture whose type signature is @($URL),
+      %@Myarray(%), and @Myarray($URL & %Slashdot), but not by @(@). 
+    - Everything in the data structure is a reference -- even scalars. 
+    - Each new data value is blessed, not the whole data structure.
+    - Data values don't have to be bless as "String", "Array", or "Hash". 
+    - However, any new types introduced should be related to the others
+      with the MakeSubtype function: MakeSubtype('Slashdot','HASH');
+  - There's a new API function called TypesMatch(), which takes a data
+    reference and a types signature, and returns 1 if the data matches the
+    signature.
+  - dprint() can be used to send output as <!-- DEBUG: ... --> messages in
+    debug mode.
+  - error() can be used to output errors about invalid arguments, etc.
+  - Default handlers are now specified as real News Clipper commands, like
+    this: 
+      <filter name=map filter=highlight words=linux>
+      <output name=array>
+  - FilterType and OutputType now provide the $data and $attributes as
+    arguments, so you can return a different type signature depending on
+    parameters such as "style".
+  - ComputeURL should now be used to compute the URL from the attributes.
+  - You should never have to check the type of $grabbedData -- News Clipper
+    will do that automatically.
+  - A RunHandler API function was added, which takes the handler name, type of
+    handler, data, and attributes. It will automatically check for correct
+    types.
+  - Some "use" statements are no longer needed.
+
 New in version 1.17:
 - A parsing bug in <a href> links was found (and fixed!) by Ludovic Drolez
   (Ludovic Drolez <ldrolez@usa.net>)

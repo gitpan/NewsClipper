@@ -1,24 +1,20 @@
 # -*- mode: Perl; -*-
 package NewsClipper::Cache;
 
+# This package implements a cache for HTML files.
+
 use strict;
-# For mkpath
-use File::Path;
 # To parse dates
 use Time::CTime;
 use Time::ParseDate;
+use File::Cache;
 
-use vars qw( $VERSION );
+use vars qw( $VERSION @ISA );
 
-$VERSION = 0.2;
+@ISA = qw(File::Cache);
+$VERSION = 0.33;
 
-BEGIN
-{
-  # We do this in the BEGIN block to get the DEBUG constant before the rest of
-  # the code is compiled into bytecode.
-  require NewsClipper::Globals;
-  NewsClipper::Globals->import;
-}
+use NewsClipper::Globals;
 
 # ------------------------------------------------------------------------------
 
@@ -26,61 +22,104 @@ sub new
 {
   my $proto = shift;
 
-  # We take the ref if "new" was called on an object, and the class ref
-  # otherwise.
-  my $class = ref($proto) || $proto;
-
-  # Create an "object"
-  my $self = {};
-
-  # Make the object a member of the class
-  bless ($self, $class);
+  my $self = $proto->SUPER::new( { cache_key => $config{cachelocation},
+                                   namespace => 'html',
+                                   username => '',
+                                   filemode => 0666,
+                                   auto_remove_stale => 0,
+                                   max_size => $config{maxcachesize} });
 
   return $self;
 }
 
 # ------------------------------------------------------------------------------
 
-# Removes data from the cache, if there is any
-sub _RemoveFromCache
+# Gets the data from the cache, if it is available, as well as the status. The
+# possible return combinations are:
+# DATA, valid: Data is in cache and not stale
+# DATA, stale: Data is in cache but stale
+# undef, not found: Data is not in cache
+
+sub get($$@)
 {
+  my $self = shift;
+  my $url = shift;
+  my @updateTimes = shift;
+
+  # Since the expiration time is infinite, any data in the cache will always
+  # be fresh (i.e. we don't have to check get_stale)
+  return ($self->SUPER::get($url),$self->_IsStillValid($url,@updateTimes));
+}
+
+# ------------------------------------------------------------------------------
+
+# Determine when the content was cached. Return the time in seconds since the
+# epoch, or undef if the cached item can't be found.
+
+sub GetTimeCached
+{
+  my $self = shift;
   my $url = shift;
 
-  my $newRegistry = '';
-  my $found = 0;
+  return $self->SUPER::get_creation_time($url);
+}
 
-  open REGISTRY,"$main::config{cachelocation}/registry.txt" or return;
-  while (defined(my $line = <REGISTRY>))
+# ------------------------------------------------------------------------------
+
+# Updates the last modified time of the information associated with the key.
+
+sub UpdateTime($$)
+{
+  my $self = shift;
+  my $url = shift;
+
+  # This is a slow way to do it, but let's do it until the File::Cache module
+  # provides support.
+  my $data = $self->SUPER::get($url);
+  $self->SUPER::set($url,$data);
+}
+# ------------------------------------------------------------------------------
+
+# Checks the cache for the url's data.  One of three return values are
+# possible:
+# valid: The data exists and isn't old
+# stale: The data is exists but is old
+# not found: The data is not in the cache
+
+sub _IsStillValid($@)
+{
+  my $self = shift;
+  my $url = shift;
+  my @updateTimes = shift;
+
+  dprint "Checking cache for data for URL:\n  $url";
+
+  my $lastUpdated = $self->get_creation_time($url);
+
+  # Return 'not found' if we couldn't find it in the cache.
+  unless (defined $lastUpdated)
   {
-    chomp $line;
-    my ($cacheUrl,$filename,$size,$time) = split / /,$line;
-
-    if ($cacheUrl eq $url)
-    {
-      dprint "Removing cached data for URL:\n  $url";
-
-      unlink "$main::config{cachelocation}/$filename";
-      $found = 1;
-    }
-    else
-    {
-      $newRegistry .= $line."\n";
-    }
+    dprint "Couldn't find cached data ";
+    return 'not found';
   }
-  close REGISTRY;
 
-  if ($found)
+  if (_Outdated(\@updateTimes,$lastUpdated))
   {
-    open REGISTRY,">$main::config{cachelocation}/registry.txt"
-      or die "Can't open cache registry file: $!";
-    print REGISTRY $newRegistry;
-    close REGISTRY;
+    dprint "Data is stale";
+    return 'stale';
+  }
+  else
+  {
+    dprint "Reusing cached data";
+    return 'valid';
   }
 }
 
 # ------------------------------------------------------------------------------
 
-sub _Outdated
+# Figures out whether the cached data is out of date
+
+sub _Outdated($$)
 {
   # Get the times that the user has specified, or the default times.
   my @relativeUpdateTimes = @{shift @_};
@@ -113,23 +152,24 @@ sub _Outdated
     $timezone = 'PST' if $timezone eq '';
 
     # Now iterate through each hour in the list, looking for the most recent
-    # update hour
+    # update hour.
     foreach my $hour (@hours)
     {
+      $day = "last $day"
+        unless $day =~ /(today|yesterday)/i || $day =~ /^last /i;
       my $tempDate = parsedate("$day $hour:00", ZONE => $timezone);
 
-      # Correct apparently future times. Basically, they meant "last Friday at
-      # 2pm", not "this Friday at 2pm" and "yesterday at 2pm" not "today at
-      # 2pm"
+      # Correct apparently future times. Basically, they meant "yesterday at
+      # 2pm", not "today at 2pm" (if it's earlier than 2pm)
       if ($tempDate > parsedate('now'))
       {
         if ($day eq 'today')
         {
           $day = 'yesterday';
         }
-        else
+        elsif ($day eq 'yesterday')
         {
-          $day = "last $day";
+          $day = "-2 days";
         }
       }
 
@@ -156,201 +196,6 @@ sub _Outdated
     dprint "Update is not needed";
     return 0;
   }
-}
-
-# ------------------------------------------------------------------------------
-
-# Checks the cache for the url's data.  One of three return values are
-# possible:
-# valid: The data exists and isn't old
-# stale: The data is exists but is old
-# not found: The data is not in the cache
-sub _IsStillValid
-{
-  my $url = shift;
-  my @updateTimes = @_;
-
-  dprint "Checking cache for data for URL:\n  $url";
-
-  my ($cacheUrl,$filename,$size,$lastUpdated) = (undef,undef,undef,undef);
-
-  open REGISTRY,"$main::config{cachelocation}/registry.txt"
-    or dprint "No registry file found" and return 'not found';
-  while (defined(my $line = <REGISTRY>))
-  {
-    chomp $line;
-    ($cacheUrl,$filename,$size,$lastUpdated) = split / /,$line;
-
-    last if $cacheUrl eq $url;
-  }
-  close REGISTRY;
-
-  # Return 'not found' if we couldn't find it in the cache.
-  dprint "Couldn't find cached data " if $cacheUrl ne $url;
-  return 'not found' unless $cacheUrl eq $url;
-
-
-  if (_Outdated(\@updateTimes,$lastUpdated))
-  {
-    dprint "Data is stale";
-    return 'stale';
-  }
-  else
-  {
-    dprint "Reusing cached data";
-    return 'valid';
-  }
-}
-
-# ------------------------------------------------------------------------------
-
-sub _ReduceCacheSize
-{
-  my $amountToReduce = shift;
-
-  dprint "Reducing cache size by $amountToReduce";
-
-  my @cacheInfo = ();
-
-  open REGISTRY,"$main::config{cachelocation}/registry.txt" or return;
-  while (defined(my $line = <REGISTRY>))
-  {
-    chomp $line;
-    my ($cacheUrl,$filename,$size,$time) = split / /,$line;
-
-    push @cacheInfo,[$cacheUrl,$filename,$size,$time];
-  }
-  close REGISTRY;
-
-  # Sort by timestamp
-  @cacheInfo = sort { $a->[3] <=> $b->[3] } @cacheInfo;
-
-  while (($#cacheInfo > -1) && ($amountToReduce > 0))
-  {
-    my ($cacheUrl,$filename,$size,$time) = @{shift @cacheInfo};
-
-    $amountToReduce -= $size;
-    _RemoveFromCache($cacheUrl);
-  }
-}
-
-# ------------------------------------------------------------------------------
-
-# Precondition: the data must not be in the cache.
-sub _PutInCache
-{
-  my $url = shift;
-  my $data = shift;
-
-  dprint "Storing data in cache for URL:\n  $url";
-
-  # Generate a new filename
-  my $filename;
-  do
-  {
-    $filename = sprintf('%d.html',rand()*100000);
-  } while -e "$main::config{cachelocation}/$filename";
-
-  mkpath ($main::config{cachelocation})
-    unless -e "$main::config{cachelocation}";
-
-  open REGISTRY,">>$main::config{cachelocation}/registry.txt"
-    or die "Can't open cache registry file: $!";
-  print REGISTRY "$url $filename ",length($data)," ",time,"\n";
-  close REGISTRY;
-
-  open CACHEFILE,">$main::config{cachelocation}/$filename"
-    or die "Can't write to cache file ($main::config{cachelocation}/$filename): $!";
-  print CACHEFILE $data;
-  close CACHEFILE;
-
-  return;
-}
-
-# ------------------------------------------------------------------------------
-
-# Returns data from the cache, for a given URL. Returns undef if the data is
-# not available.
-
-sub _GetFromCache
-{
-  my $url = shift;
-
-  my ($cacheUrl,$filename,$size,$time) = (undef,undef,undef,undef);
-
-  open REGISTRY,"$main::config{cachelocation}/registry.txt" or return undef;
-  while (defined(my $line = <REGISTRY>))
-  {
-    chomp $line;
-    ($cacheUrl,$filename,$size,$time) = split / /,$line;
-
-    last if $cacheUrl eq $url;
-  }
-  close REGISTRY;
-
-  return undef unless $cacheUrl eq $url;
-
-  open CACHEDDATA,"$main::config{cachelocation}/$filename"
-    or die "Can't locate file $filename in the cache, even though it's".
-           " listed\n  in the registry.\n";
-  my $data = join '',<CACHEDDATA>;
-  close CACHEDDATA;
-
-  return $data;
-}
-
-# ------------------------------------------------------------------------------
-
-# Gets the data from the cache, if it is available, as well as the status. The
-# possible return combinations are:
-# DATA, valid: Data is in cache and not stale
-# DATA, stale: Data is in cache but stale
-# undef, not found: Data is not in cache
-
-sub GetData
-{
-  my $self = shift;
-  my $url = shift;
-  my @updateTimes = @_;
-
-  return (_GetFromCache($url),_IsStillValid($url,@updateTimes));
-}
-
-# ------------------------------------------------------------------------------
-
-sub CacheData
-{
-  my $self = shift;
-  my $url = shift;
-  my $data = shift;
-
-  _RemoveFromCache($url);
-
-  if (-e "$main::config{cachelocation}/registry.txt")
-  {
-    # Get the current cache size.
-    my $cacheSize = 0;
-
-    open REGISTRY,"$main::config{cachelocation}/registry.txt"
-      or die "Can't open cache registry file: $!";
-
-    while (defined(my $line = <REGISTRY>))
-    {
-      chomp $line;
-      my ($cacheUrl,$filename,$size,$time) = split / /,$line;
-
-      $cacheSize += $size;
-    }
-    close REGISTRY;
-
-    # Reduce the cache size if necessary
-    _ReduceCacheSize(length $data)
-      if $cacheSize + length $data > $main::config{maxcachesize};
-  }
-
-
-  # Cache it!
-  _PutInCache($url,$data);
 }
 
 1;

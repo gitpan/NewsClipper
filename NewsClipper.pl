@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/perl -w
 
 # For bare-bones documentation, do "perldoc NewsClipper.pl". A user's manual
 #   is included with the purchase of one of the commercial versions.
@@ -19,36 +19,319 @@
 
 # ------------------------------------------------------------------------------
 
-use Getopt::Std;
+require 5.005;
+use strict;
+
+use Getopt::Long;
 use FileHandle;
 
-use vars qw( %config %opts $commandLine );
+use vars qw( %config %opts $VERSION $COMPATIBLE_CONFIG_VERSION );
 
 # These need to be predeclared so that this code can be parsed and run until
 # we load the NewsClipper::Globals module. WARNING! Be careful to not use
 # these until NewsClipper::Globals has been imported!
 sub DEBUG();
-sub dprint;
-sub reformat;
-sub dequote;
+sub dprint(@);
+sub reformat(@);
+sub dequote($;$);
+
+# To suppress warnings
+use vars qw(&dprint &reformat &dequote);
+
+# The version of the script
+$VERSION = do {my @r=(q$ 1.2.3 $=~/\d+/g);sprintf"%d."."%1d"x$#r,@r};
+
+# The version of configuration file that this version of News Clipper can use.
+$COMPATIBLE_CONFIG_VERSION = 1.21;
+
+# ------------------------------ MAIN PROGRAM ---------------------------------
+
+sub SetupConfig();
+sub print_usage();
+sub HandleProxyPassword();
+sub HandleClearCache();
+sub ProcessFlagCommand();
+sub ProcessFiles();
+sub PrintDebugSummary(\@);
+
+{
+  # Store a copy of @INC for later debugging messages
+  my @startingINC = @INC;
+
+  SetupConfig();
+
+  PrintDebugSummary(@startingINC);
+}
+
+# Print the usage if the -h flag was used
+print_usage() && exit(0) if $opts{h};
+
+HandleProxyPassword();
+HandleClearCache();
+
+# Do timers unless we are in debug mode or on the broken Windows platform
+if (DEBUG || ($^O eq 'MSWin32') || ($^O eq 'dos'))
+{
+  if ($opts{e})
+  {
+    ProcessFlagCommand();
+  }
+  else
+  {
+    ProcessFiles();
+  }
+}
+else
+{
+  $SIG{ALRM} = sub { die "timeout" };
+
+  eval
+  {
+    alarm($config{scriptTimeout});
+    if ($opts{e})
+    {
+      ProcessFlagCommand();
+    }
+    else
+    {
+      ProcessFiles();
+    }
+    alarm(0);
+  };
+
+  if ($@)
+  {
+    # See if it was our timeout
+    if ($@ =~ /timeout/)
+    {
+      die "News Clipper script timeout has expired. News Clipper killed.\n";
+    }
+    else
+    {
+      # The eval got aborted, so we need to stop the alarm
+      alarm (0);
+      # and print the error. (I'm not simply die'ing here because I don't like
+      # the annoying ...propagated message. I don't know if this is the right
+      # way to do this, but it works.)
+      print STDERR $@;
+      exit 1;
+    }
+  }
+  exit 0;
+}
 
 #------------------------------------------------------------------------------
 
-require 5.004;
-use strict;
+# This is the real meat of the main program. For each file, we parse it,
+# executing and News Clipper commands. We also do some work to redirect STDOUT
+# to the output file.
 
-# $home is used in the config file sometimes
-use vars qw( $VERSION $home );
+sub ProcessFiles()
+{
+  # Make unbuffered for easier debugging.
+  $| = 1 if DEBUG;
 
-$VERSION = do {my @r=(q$Revision: 1.1.7 $=~/\d+/g);sprintf"%d."."%1d"x$#r,@r};
+  for (my $i=0;$i <= $#{$config{inputFiles}};$i++)
+  {
+    dprint "Now processing $config{inputFiles}[$i] => $config{outputFiles}[$i]";
+
+    # Print a warning and skip if the file doesn't exist and isn't a text file.
+    # However, don't do the checks if the file is STDIN.
+    unless ($config{inputFiles}[$i] eq 'STDIN')
+    {
+      warn reformat "Input file $config{inputFiles}[$i] can't be found.\n"
+        and next unless -e $config{inputFiles}[$i];
+      warn reformat "Input file $config{inputFiles}[$i] is a directory.\n"
+        and next if -d $config{inputFiles}[$i];
+      warn reformat "Input file $config{inputFiles}[$i] is empty.\n"
+        and next if -z $config{inputFiles}[$i];
+    }
+
+    # We'll write to the file unless we're in DEBUG mode.
+    my $writeToFile = 1;
+    $writeToFile = 0
+      if DEBUG || $config{outputFiles}[$i] eq 'STDOUT';
+
+    $config{inputFiles}[$i] = *STDIN if $config{inputFiles}[$i] eq 'STDIN';
+
+    my $oldSTDOUT = new FileHandle;
+
+    # Redirect STDOUT to a temp file.
+    if ($writeToFile)
+    {
+      # Store the old STDOUT so we can replace it later.
+      $oldSTDOUT->open(">&STDOUT") or die "Couldn't save STDOUT: $!\n";
+
+      # If the user wants to see a copy of the output... (Doesn't work in
+      # Windows or DOS)
+      if ($opts{v} && ($^O ne 'MSWin32') && ($^O ne 'dos'))
+      {
+        # Make unbuffered
+        $| = 2;
+        open (STDOUT,"| tee $config{outputFiles}[$i].temp") 
+          or die reformat dequote<<"          EOF";
+            Couldn't create temporary output file
+            $config{outputFiles}[$i].temp using "tee": $!
+          EOF
+      }
+      else
+      {
+        open (STDOUT,">$config{outputFiles}[$i].temp")
+          or die reformat dequote<<"          EOF";
+            Couldn't create temporary output file
+            $config{outputFiles}[$i].temp: $!
+          EOF
+      }
+    }
+
+    require NewsClipper::Parser;
+
+    # Okay, now do the magic. Parse the input file, calling the handlers
+    # whenever a special tag is seen.
+
+    my $p = new NewsClipper::Parser;
+    $p->parse_file($config{inputFiles}[$i]);
+
+    # Restore STDOUT to the way it was
+    if ($writeToFile)
+    {
+      close (STDOUT);
+      open(STDOUT, ">&" . $oldSTDOUT->fileno())
+        or die "Can't restore STDOUT: $!.\n";
+
+      # Replace the output file with the temp file. Move it to .del for OSes
+      # that have delayed deletes.
+      rename ($config{outputFiles}[$i], "$config{outputFiles}[$i].del");
+      unlink ("$config{outputFiles}[$i].del");
+      rename ("$config{outputFiles}[$i].temp",$config{outputFiles}[$i]);
+      chmod 0755, $config{outputFiles}[$i];
+
+      FTP_File($config{outputFiles}[$i],$config{ftpFiles}[$i])
+        if defined $config{ftpFiles}[$i] &&
+           exists $config{ftpFiles}[$i]{server};
+    }
+  }
+}
+
+#------------------------------------------------------------------------------
+
+# This is a special handler which does parse any files. Instead it creates a
+# simple News Clipper command for the handler specified with -e and executes
+# that.
+
+sub ProcessFlagCommand()
+{
+  # Make unbuffered for easier debugging.
+  $| = 1 if DEBUG;
+
+  dprint "Now processing handler \"$opts{e}\" => STDOUT";
+
+  my $oldSTDOUT = new FileHandle;
+
+  require NewsClipper::Parser;
+
+  my $inputCommand;
+  # Construct the input command
+  if ($opts{e} =~ /<.*>/s)
+  {
+    $inputCommand = dequote<<"    EOF";
+    <!-- newsclipper
+      $opts{e}
+    -->
+    EOF
+  }
+  else
+  {
+    $inputCommand .= "<!-- newsclipper\n";
+
+    # Each News Clipper command is separated by a comma
+    my @handlers = split /,/,$opts{e};
+    for (my $i=0 ; $i <= $#handlers ; $i++)
+    {
+      if ($i == 0)
+      {
+        $inputCommand .= "  <input name=$handlers[$i]>\n";
+      }
+      elsif ($i != $#handlers)
+      {
+        $inputCommand .= "  <filter name=$handlers[$i]>\n";
+      }
+      else
+      {
+        $inputCommand .= "  <output name=$handlers[$i]>\n";
+      }
+    }
+
+    $inputCommand .= "-->\n";
+  }
+
+  my $p = new NewsClipper::Parser;
+  $p->parse($inputCommand);
+}
 
 # ------------------------------------------------------------------------------
 
-sub print_usage
+# Send the file to the server. Prints and error to STDERR and returns 0 if
+# something goes wrong. Returns 1 otherwise.
+
+sub FTP_File()
+{
+  my $filename = shift;
+  my %ftp_info = %{shift @_};
+
+  dprint "FTP'ing file $filename to server $ftp_info{server}";
+
+  use Net::FTP;
+
+  my $numTriesLeft = $config{socketTries};
+
+  my $ftp;    
+
+  do
+  {
+    $ftp = Net::FTP->new($ftp_info{server},Timeout => $config{socketTimeout});
+  } until ($numTriesLeft == 0 || $ftp);
+
+  unless ($ftp)
+  {
+    warn "FTP connection failed: $@";
+    return 0;
+  }
+
+  unless ($ftp->login($ftp_info{username},$ftp_info{password}))
+  {
+    warn "FTP login failed for user $ftp_info{username} on host " .
+      "$ftp_info{server}: $@";
+    $ftp->quit; 
+    return 0;
+  }
+
+  unless ($ftp->cwd($ftp_info{dir}))
+  {
+    warn "Couldn't change to directory $ftp_info{dir} during FTP: $@";
+    $ftp->quit; 
+    return 0;
+  }
+
+  unless ($ftp->put($filename))
+  {
+    warn "Couldn't FTP file $filename: $@";
+    $ftp->quit; 
+    return 0;
+  }
+
+  $ftp->quit; 
+}
+
+# ------------------------------------------------------------------------------
+
+# Prints the usage information
+
+sub print_usage()
 {
   my $exeName = $0;
   # Fix the $exeName if it's the compiled version.
-  ($exeName) = $ENV{SOURCEEXE} =~ /([^\/\\]*)$/ if defined $ENV{SOURCEEXE};
+  ($exeName) = $ENV{sourceExe} =~ /([^\/\\]*)$/ if defined $ENV{sourceExe};
 
   my $version = "$VERSION, $config{product}";
 
@@ -63,9 +346,11 @@ sub print_usage
     This is News Clipper version $version
 
     usage: $exeName [-adnrv] [-i inputfile] [-o outputfile] [-c configfile]
+           [-e command]
 
     -i The template file to use as input (overrides value in configuration file)
     -o The output file (overrides value in configuration file)
+    -e Run the specified handler and output the results. (Overrides -i and -o.)
     -c The configuration file to use
     -a Automatically download handlers as needed
     -n Check for new versions of the handlers
@@ -77,92 +362,351 @@ sub print_usage
 
 # ------------------------------------------------------------------------------
 
-sub _LoadSysConfig
+# Calls LoadSysConfig and LoadUserConfig to load the system-wide and user
+# configuration information.  It then tweaks a few of the configuration
+# parameters and loads the News Clipper global functions and constants. Then
+# it prints a summary if we're running in DEBUG mode.  Finally, it validates
+# the parameters to make sure they are valid.
+
+sub SetupConfig()
 {
-  $config{'sysconfigfile'} = 'Not specified';
+  SetupSSI();
 
-  return if !exists $ENV{'NEWSCLIPPER'} || $^O eq 'MSWin32' || $^O eq 'dos';
+  {
+    # Get the command line flags. Localize @ARGV since getopt destroys it. We
+    # do this before loading the configuration in order to get the -c flag.
+    local @ARGV = @ARGV;
+    Getopt::Long::Configure(
+      qw(bundling noignore_case auto_abbrev prefix_pattern=-));
+    GetOptions(\%opts, qw(i:s o:s c:s e:s a h d n r v C));
+  }
 
-  my $configFile = "$ENV{'NEWSCLIPPER'}/NewsClipper.cfg";
-  my $doResult;
-  my $warnings = '';
+  # We load the configuration, being careful not to use any of the stuff in
+  # NewsClipper::Globals. (Like dprint, for example.)
+  LoadConfigFiles();
+
+  # Translate the cache size into bytes from megabytes, and the maximum image
+  # age into seconds from days.
+  $config{maxcachesize} = $config{maxcachesize}*1048576
+    if defined $config{maxcachesize};
+  $config{maximgcacheage} = $config{maximgcacheage}*86400
+    if defined $config{maxcacheage};
+
+  # Put the handler locations on the include search path
+  foreach my $dir (@{$config{handlerlocations}})
+  {
+    unshift @INC,@{$config{handlerlocations}} if -d $dir;
+  }
+
+  # Override the config values if the user specified -i or -o.
+  $config{inputFiles} = [$opts{i}] if defined $opts{i};
+  $config{outputFiles} = [$opts{o}] if defined $opts{o};
+
+  # Put the News Clipper module file location on @INC
+  push @INC,$config{modulepath}
+    if defined $config{modulepath} and -d $config{modulepath};
+
+  # This should be in ValidateSetup, but we need to check it before slurping
+  # in the NewsClipper::Globals. (We don't need modulepath in the compiled
+  # version.)
+  die "\"modulepath\" in NewsClipper.cfg must be a directory.\n"
+    if !defined $ENV{sourceExe} && ! -d $config{modulepath};
+
+  # Now we slurp in the global functions and constants.
+  require NewsClipper::Globals;
+  NewsClipper::Globals->import;
+
+  $NewsClipper::Globals::home = GetHomeDirectory();
+
+  # Make the .NewsClipper directory if it doesn't exist already.
+  mkdir "$NewsClipper::Globals::home/.NewsClipper", 0700
+    unless -e "$NewsClipper::Globals::home/.NewsClipper";
+
+  # Initialize the HTML cache, News Clipper state, and handler factory
+  require NewsClipper::Cache;
+  $NewsClipper::Globals::cache = new NewsClipper::Cache;
+  # To shut up the warning
+  { my $dummy = $NewsClipper::Globals::cache; }
+
+  use File::Cache;
+  $NewsClipper::Globals::state = new File::Cache (
+               { cache_key => "$NewsClipper::Globals::home/.NewsClipper/state",
+                 namespace => 'NewsClipper',
+                 username => '',
+                 filemode => 0666,
+                 auto_remove_stale => 0,
+               } );
+  # To shut up the warning
+  { my $dummy = $NewsClipper::Globals::state; }
+
+  require NewsClipper::HandlerFactory;
+  $NewsClipper::Globals::handlerFactory = new NewsClipper::HandlerFactory;
+  # To shut up the warning
+  { my $dummy = $NewsClipper::Globals::handlerFactory; }
+
+  ValidateSetup();
+}
+
+# ------------------------------------------------------------------------------
+
+# This function sets up few things for the case when News Clipper is run as
+# a server-side include. (We don't support running News Clipper as a CGI
+# program.)
+
+sub SetupSSI()
+{
+  return unless exists $ENV{SCRIPT_NAME};
+
+  # First, we redirect STDERR to STDOUT so errors go to the browser.
+  open(STDERR,">&STDOUT");
+}
+
+# ------------------------------------------------------------------------------
+
+# This function loads the system-wide config and the user's config. It dies
+# with an error if a configuration file could not be loaded. If the user's
+# configuration file can't be found or loaded in Unix, this is okay. But on
+# Windows, it is an error.
+
+sub LoadConfigFiles()
+{
+  my ($sysStatus,$sysConfigMessage) = LoadSysConfig();
+  my ($userStatus,$userConfigMessage) = LoadUserConfig();
+
+  # Okay situations
+  return if $sysStatus eq 'okay' && $userStatus eq 'okay';
+  return if $sysStatus eq 'okay' && ($userStatus eq 'open error' && !$opts{c});
+  return if $sysStatus eq 'no env variable' && $userStatus eq 'okay';
+  return if $sysStatus eq 'windows' && $userStatus eq 'okay';
+
+  warn $sysConfigMessage if $sysStatus ne 'okay';
+  warn "\n" if $sysStatus ne 'okay' && $userStatus ne 'okay';
+  warn $userConfigMessage if $userStatus ne 'okay';
+  die "\n";
+}
+
+# ------------------------------------------------------------------------------
+
+# Loads the system-wide configuration file, storing the location of that file
+# in $config{sysconfigfile}. The location is specified by the NEWSCLIPPER
+# environment variable.
+
+sub LoadSysConfig()
+{
+  my $warnings;
+
+  $config{sysconfigfile} = 'Not specified';
+
+  unless (exists $ENV{NEWSCLIPPER})
+  {
+    $warnings = <<"    EOF";
+News Clipper could not open your system-wide configuration file
+because your NEWSCLIPPER environment variable is not set.
+    EOF
+    return ('no env variable',$warnings);
+  }
+
+  return ('windows','') if $^O eq 'MSWin32' || $^O eq 'dos';
+
+  my $configFile = "$ENV{NEWSCLIPPER}/NewsClipper.cfg";
+
+  my ($evalWarnings,$evalResult) = ('',0);
 
   # Hide any warnings that occur from parsing the config file.
+  local $SIG{__WARN__} = sub { $evalWarnings .= $_[0] };
+  my $home = GetHomeDirectory();
+
+  # We do an eval instead of doing a "do $configFile" because we want to
+  # slurp in $home from the enclosing block. "do $configFile" doesn't slurp
+  # $home.
+  my $openResult = open CONFIGFILE, $configFile;
+  if ($openResult)
   {
-    local $SIG{__WARN__} = sub { };
-    $doResult = do $configFile;
+    my $code = join '', <CONFIGFILE>;
+    close CONFIGFILE;
+    $evalResult = eval $code;
+  }
+  else
+  {
+    $warnings = <<"    EOF";
+News Clipper could not open your system-wide configuration file
+"$configFile". Make sure your NEWSCLIPPER environment
+variable is set correctly. The error is:
+$!
+    EOF
+    return ('open error',$warnings);
+  }
+
+  # Check that the config file wasn't a directory or something.
+  if (!-f $configFile)
+  {
+    $warnings = <<"    EOF";
+News Clipper could not open your system-wide configuration file
+because "$configFile" is not a plain file.
+    EOF
+
+    return ('open error',$warnings);
+  }
+
+  # Check if there were any syntax errors while eval'ing the configuration
+  # file.
+  if ($@)
+  {
+    $warnings = <<"    EOF";
+News Clipper found your system-wide configuration file
+"$configFile", but it could not be processed
+because of the following error:
+$@
+    EOF
+    return ('compile error',$warnings);
+  }
+
+  if ($warnings)
+  {
+    $warnings = <<"    EOF";
+News Clipper found your system-wide configuration file
+"$configFile", but encountered some warnings
+while processing it:
+$evalWarnings
+    EOF
+    return ('compile error',$warnings);
   }
 
   # No error message means we found it
-  if ($doResult)
+  if ($evalResult)
   {
     $config{sysconfigfile} = $configFile;
-    return;
+    return ('okay','');
   }
-
-  if ($@)
+  else
   {
-    die <<"    EOF";
-News Clipper found your configuration file at $configFile, but it could not
-be processed because of the following error:
-$warnings $@
-    EOF
-  }
-
-  unless (defined $doResult)
-  {
-    die <<"    EOF";
-News Clipper could not load your system-wide configuration file
-"$configFile". Make sure your NEWSCLIPPER environment variable is
-set correctly. The error is:
-$warnings $!
-    EOF
-  }
-
-  unless ($doResult)
-  {
-    die <<"    EOF";
-News Clipper found your configuration file at
-"$configFile", but could not process it.
-$warnings
-    EOF
+    # Can't get here, since there would have been errors or warnings above.
+    die "Whoa! You shouldn't be here! Send email describing what you ".
+      "were doing";
   }
 }
 
 # ------------------------------------------------------------------------------
 
-sub _LoadUserConfig
+# Loads the user's configuration file, storing the location of that file in
+# $config{userconfigfile}. The location of this file is
+# $home/.NewsClipper/NewsClipper.cfg.
+
+sub LoadUserConfig()
 {
   $config{userconfigfile} = 'Not found';
 
+  my $home = GetHomeDirectory();
   my $configFile = $opts{c} || "$home/.NewsClipper/NewsClipper.cfg";
 
-  # Make sure $configFile specifies a specific directory, so the the do
-  # command below doesn't start searching the Perl include path.
-  $configFile = "./$configFile" unless $configFile =~ /[\/\\]/;
-  
-  my $doResult;
-
-  my $warnings = '';
+  my ($evalWarnings,$evalResult,$warnings) = ('',0,'');
 
   # Hide any warnings that occur from parsing the config file.
+  local $SIG{__WARN__} = sub { $evalWarnings .= $_[0] };
+
+  # We do an eval instead of doing a "do $configFile" because we want to
+  # slurp in $home from the enclosing block. "do $configFile" doesn't slurp
+  # $home.
+  my $openResult = open CONFIGFILE, $configFile;
+  if ($openResult)
   {
-    local $SIG{__WARN__} = sub { $warnings .= $_[0] };
+    my $code = join '', <CONFIGFILE>;
+    close CONFIGFILE;
 
     # This is kinda tricky. We don't want the %config in $configFile to
-    # totally redefine %main::config, so we wrap the "do" in a package
+    # totally redefine %main::config, so we wrap the "eval" in a package
     # declaration, which will put the config file's %config in the
     # NewsClipper::config package for later use.
-    my $currentPackage = __PACKAGE__;
+    my $outerPackage = __PACKAGE__;
     package NewsClipper::config;
-    use vars qw ($home);
-    *home = \$main::home;
-    $doResult = do $configFile;
-    eval "package $currentPackage";
+    use vars qw(%config);
+
+    $evalResult = eval $code;
+
+    # Restore outer package, being careful that the eval doesn't overwrite the
+    # $@ result of the previous eval
+    {
+      local $@;
+      eval "package $outerPackage";
+    }
+  }
+  else
+  {
+    if ($^O eq 'MSWin32' || $^O eq 'dos')
+    {
+      $warnings = <<"      EOF";
+News Clipper could not open your personal configuration file
+"$configFile". 
+Your registry value for "InstallDir" in
+"HKEY_LOCAL_MACHINE\\SOFTWARE\\Spinnaker Software\\News
+Clipper\\$VERSION" (or your HOME environment variable) may not be
+correct.
+      EOF
+    }
+    else
+    {
+      $warnings = <<"      EOF";
+News Clipper could not open your personal configuration file
+"$configFile". The error is:
+$!
+      EOF
+    }
+
+    return ('open error',$warnings);
+  }
+
+  # Check that the config file wasn't a directory or something.
+  if (!-f $configFile)
+  {
+    if ($^O eq 'MSWin32' || $^O eq 'dos')
+    {
+      $warnings = <<"      EOF";
+News Clipper could not open your personal configuration file
+because "$configFile" is not a plain file.  Your registry
+value for "InstallDir" in
+"HKEY_LOCAL_MACHINE\\SOFTWARE\\Spinnaker Software\\News
+Clipper\\$VERSION" (or your HOME environment variable) may not be
+correct.
+      EOF
+    }
+    else
+    {
+      $warnings = <<"      EOF";
+News Clipper could not open your personal configuration file
+because "$configFile" is not a plain file. Make sure the file
+NewsClipper.cfg is in your <HOME>/.NewsClipper directory.
+      EOF
+    }
+
+    return ('open error',$warnings);
+  }
+
+  # Check if there were any syntax errors while eval'ing the configuration
+  # file.
+  if ($@)
+  {
+    $warnings = <<"    EOF";
+News Clipper found your personal configuration file
+"$configFile", but it could not be processed
+because of the following error:
+$@
+    EOF
+    return ('compile error',$warnings);
+  }
+
+  if ($evalWarnings)
+  {
+    $warnings = <<"    EOF";
+News Clipper found your personal configuration file
+"$configFile", but encountered some warnings
+while processing it:
+$evalWarnings
+    EOF
+    return ('compile error',$warnings);
   }
 
   # No error message means we found it
-  if ($doResult)
+  if ($evalResult)
   {
     $config{userconfigfile} = $configFile;
 
@@ -173,77 +717,201 @@ sub _LoadUserConfig
     }
 
     undef %NewsClipper::config::config;
-    return;
+    return ('okay','');
   }
-
-  if ($@)
+  else
   {
-    die <<"    EOF";
-News Clipper found your personal configuration file at
-$configFile, but could not be processed because of the following
-error:
-$warnings $@
-    EOF
-  }
-
-  unless (defined $doResult)
-  {
-    # On Windows we croak if we can't load the config file.
-    if ($^O eq 'MSWin32' || $^O eq 'dos')
-    {
-      die <<"      EOF";
-News Clipper couldn't load your configuration file "$configFile".
-Your registry value for "InstallDir" in
-"HKEY_LOCAL_MACHINE\\SOFTWARE\\Spinnaker Software\\News
-Clipper\\$VERSION" (or your HOME environment variable) may not be
-correct. Here is the error: $warnings $!
-      EOF
-    }
-    # If the person explicitely set the config file, we'd better croak.
-    elsif ($opts{c})
-    {
-      die reformat dequote<<"      EOF";
-News Clipper couldn't load your configuration file "$configFile".
-Here is the error: $warnings $!
-      EOF
-    }
-    # Otherwise just emit a warning on the debug output.
-    else
-    {
-      warn <<"      EOF";
-News Clipper could not load personal configuration file "$configFile"
-because of the following error: $warnings $!
-      EOF
-      return;
-    }
-  }
-
-  unless ($doResult)
-  {
-    die <<"    EOF";
-News Clipper found your configuration file at
-"$configFile", but could not process it.
-$warnings
-    EOF
+    # Can't get here, since there would have been errors or warnings above.
+    die "Whoa! You shouldn't be here! Send email describing what you ".
+      "were doing";
   }
 }
 
 # ------------------------------------------------------------------------------
 
-sub LoadConfig
+# Simply gets the home directory. First it tries to get it from the password
+# file, then from the Windows registry, and finally from the HOME environment
+# variable.
+
+sub GetHomeDirectory()
 {
-  _LoadSysConfig;
-  _LoadUserConfig;
+  # Get the user's home directory. First try the password info, then the
+  # registry (if it's a Windows machine), then any HOME environment variable.
+  my $home = eval { (getpwuid($>))[7] } || GetWinInstallDir() || $ENV{HOME};
 
-  # Put the News Clipper module file location, if it is specified
-  push @INC,$config{modulepath};
+  # "s cause problems in Windows. Sometimes people set their home variable as
+  # "c:\Program Files\NewsClipper", which causes when the path is therefore
+  # "c:\Program Files\NewsClipper"\.NewsClipper\Handler\Acquisition
+  $home =~ s/"//g if defined $home;
 
-  # Now we slurp in the global functions and constants.
-  require NewsClipper::Globals;
-  NewsClipper::Globals->import;
+  die <<"  EOF"
+News Clipper could not determine your home directory. On non-Windows
+machines, News Clipper attempts to get your home directory using getpwuid,
+then the HOME environment variable. On Windows machines, it attempts to
+read the registry entry "HKEY_LOCAL_MACHINE\\SOFTWARE\\Spinnaker
+Software\\News Clipper\\$VERSION" then tries the HOME environment
+variable.
+  EOF
+    unless defined $home;
+
+    return $home;
+}
+
+# ------------------------------------------------------------------------------
+
+# Checks the setup (system-wide modified by user's) to make sure everything is
+# okay.
+
+sub ValidateSetup()
+{
+  die <<"  EOF"
+Could not find either a system-wide configuration file or a personal
+configuration file.
+  EOF
+    if $config{sysconfigfile} eq 'Not specified' &&
+       $config{userconfigfile} eq 'Not found';
+
+  if (!defined $config{forNewsClipperVersion} ||
+      ($config{forNewsClipperVersion} < $COMPATIBLE_CONFIG_VERSION))
+  {
+    my $version_string = $config{forNewsClipperVersion};
+    $version_string = 'pre-1.21' unless defined $version_string;
+
+    die reformat dequote<<"    EOF";
+      Your NewsClipper.cfg configuration file is incompatible with this
+      version of News Clipper (need $COMPATIBLE_CONFIG_VERSION, have
+      $version_string). Please run "ConvertConfig /path/NewsClipper.cfg"
+      using the ConvertConfig that came with this distribution.
+    EOF
+  }
+
+  die "\"handlerlocations\" in NewsClipper.cfg must be non-empty.\n"
+    if $#{$config{handlerlocations}} == -1;
+
+  foreach my $dir (@{$config{handlerlocations}})
+  {
+    die "\"$dir\" from handlerlocations in NewsClipper.cfg is not ".
+      "a directory.\n" unless -d $dir;
+  }
+
+  CheckRegistration();
+
+  # Check that the user isn't trying to use the -i and -o flags for the Trial
+  # and Personal versions
+  if (($config{product} eq "Trial" ||
+       $config{product} eq "Personal") &&
+      (defined $opts{i} || defined $opts{o}))
+  {
+    die reformat dequote<<"    EOF";
+      The -i and -o flags are disabled in the Trial and Personal versions of
+      News Clipper. Please specify your input and output files in the
+      NewsClipper.cfg file.
+    EOF
+  }
+
+  # Check that the input files and output files match
+  if ($#{$config{inputFiles}} != $#{$config{outputFiles}})
+  {
+    die reformat dequote <<"    EOF";
+      Your input and output files are not correctly specified. Check your
+      configuration file NewsClipper.cfg.
+    EOF
+  }
+
+  # Check that if the user is using ftpFiles, the number matches
+  if ($#{$config{ftpFiles}} != -1 &&
+      $#{$config{ftpFiles}} != $#{$config{outputFiles}})
+  {
+    die reformat dequote <<"    EOF";
+      Your ftp information is not correctly specified. If you do not want to
+      ftp any files, there should be nothing specified. If you want to ftp any
+      files, you must specify the information for each file, or use "{}" to
+      indicate that a file should not be sent.
+    EOF
+  }
+
+  # Check that the user isn't trying to process more than one input file for
+  # the Trial version
+  if ($#{$config{inputFiles}} > 0 && $config{product} eq "Trial")
+  {
+    die reformat dequote <<"    EOF";
+      Sorry, but the Trial version of News Clipper can only process one input
+      file.
+    EOF
+  }
+
+  # Check that the user isn't trying to process more than the registered
+  # number of files for the Personal version
+  if ($config{product} eq "Personal" &&
+      $#{$config{inputFiles}}+1 > $config{numberpages} )
+  {
+    die reformat dequote<<"    EOF";
+      Sorry, but this Personal version of News Clipper is only registered to
+      process $config{numberpages} input files.
+    EOF
+  }
+
+  die "No input files specified.\n" if $#{$config{inputFiles}} == -1;
+
+  # Check that they specified cachelocation and maxcachesize
+  die "cachelocation not specified in NewsClipper.cfg\n"
+    unless defined $config{cachelocation} &&
+           $config{cachelocation} ne '';
+  die "maxcachesize not specified in NewsClipper.cfg\n"
+    unless defined $config{maxcachesize} &&
+           $config{maxcachesize} != 0;
+
+  # Check sockettries, and set it if necessary
+  $config{socketTries} = 1 unless defined $config{socketTries};
+  die "socketTries must be 1 or more\n" unless $config{socketTries} > 0;
+}
+
+# ------------------------------------------------------------------------------
+
+# Prints some useful information when running in DEBUG mode.
+
+sub PrintDebugSummary(\@)
+{
+  my @startingINC = @{shift @_};
+
+  return unless DEBUG;
+
+  dprint "Operating system:\n  $^O";
+  dprint "Version:\n  $VERSION, $config{product}";
+  dprint "Command line was:\n  $0 @ARGV";
+  dprint "Options are:";
+
+  while (my ($k,$v) = each %opts)
+  {
+    dprint "  $k: $v";
+  }
+
+  dprint "\$ENV{NEWSCLIPPER}:\n";
+  if (defined $ENV{NEWSCLIPPER})
+  {
+    dprint "  $ENV{NEWSCLIPPER}";
+  }
+  else
+  {
+    dprint "  <NOT SPECIFIED>";
+  }
+
+  dprint "Home directory:\n  " . GetHomeDirectory();
+  
+  require Cwd;
+  dprint "Current directory:\n  ",Cwd::cwd(),"\n";
 
   dprint "System-wide configuration file found as:\n  $config{sysconfigfile}\n";
   dprint "Personal configuration file found as:\n  $config{userconfigfile}\n";
+
+  dprint "\@INC before loading configuration:";
+  dprint "  $_" foreach @startingINC;
+
+  dprint "\@INC after loading configuration:";
+  foreach my $i (@INC)
+  {
+    dprint "  $i";
+  }
 
   dprint "Configuration is:";
   while (my ($k,$v) = each %config)
@@ -266,21 +934,32 @@ sub LoadConfig
     }
     dprint $keyVal;
   }
-
 }
 
 # ------------------------------------------------------------------------------
 
-sub CheckRegistration
+# Checks the registration key to make sure it's a valid one.
+
+sub CheckRegistration()
 {
   # Set the default product type
   $config{product} = "Trial";
   $config{numberpages} = 1;
   $config{numberhandlers} = 1;
 
+  # Override the product type in the Open Source version.
+  $config{product} = "Open Source", return;
+
   # Extract the date, license type, and crypt'd code from the key
   my ($date,$license,$numPages,$numHandlers,$code) =
     $config{regKey} =~ /^(.*?)#(.*?)#(.*?)#(.*)#(.*)$/;
+
+  # In case the regKey isn't valid
+  $date = '' unless defined $date;
+  $license = '' unless defined $license;
+  $numPages = '' unless defined $numPages;
+  $numHandlers = '' unless defined $numHandlers;
+  $code = '' unless defined $code;
 
   my $licensestring =
     "$date#$license#$^O#$config{email}#$numPages#$numHandlers";
@@ -323,129 +1002,45 @@ sub CheckRegistration
       Number of Handlers: $numHandlers
     EOF
   }
-
-  # Override the product type in the Open Source version. We use SOURCEEXE to
-  # detect if this is the compiled version (the compiler sets this).
-  $config{product} = "Open Source";
 }
 
 # ------------------------------------------------------------------------------
 
-sub GetHomeDirectory
+# Clear the cache, prompting the user if necessary.
+#
+# DO NOT REMOVE THE PROMPT! We don't want hordes of websites calling us
+# because someone is clearing their cache and hitting the servers every 5
+# minutes of the day.
+
+sub HandleClearCache()
 {
-  # Get the user's home directory. First try the password info, then the
-  # registry (if it's a Windows machine), then any HOME environment variable.
-  my $home = eval { (getpwuid($>))[7] } || GetWinInstallDir() || $ENV{HOME};
+  if ($opts{C})
+  {
+    print "Are you sure you want to clear the News Clipper cache? ";
+    my $response = <STDIN>;
 
-  # "s cause problems in Windows. Sometimes people set their home variable as
-  # "c:\Program Files\NewsClipper", which causes when the path is therefore
-  # "c:\Program Files\NewsClipper"\.NewsClipper\Handler\Acquisition
-  $home =~ s/"//g;
+    while ($response !~ /^[yn]/i)
+    {
+      print "Yes or no? ";
+      $response = <STDIN>;
+    }
 
-  die reformat dequote <<"  EOF"
-    News Clipper could not determine your home directory. On non-Windows
-    machines, News Clipper attempts to get your home directory using getpwuid,
-    then the HOME environment variable. On Windows machines, it attempts to
-    read the registry entry "HKEY_LOCAL_MACHINE\\SOFTWARE\\Spinnaker
-    Software\\News Clipper\\$VERSION" then tries the HOME environment
-    variable.
-  EOF
-    unless defined $home;
+    return unless $response =~ /^y/i;
 
-    return $home;
+    unlink <$config{cachelocation}/html/*>;
+  }
 }
 
 # ------------------------------------------------------------------------------
 
-sub SetupConfig
-{
-  $home = GetHomeDirectory;
+# This routine allows the user to enter a username and password for a proxy.
 
-  LoadConfig;
-
-  # Translate the cache size into bytes from megabytes, and the maximum image
-  # age into seconds from days.
-  $config{maxcachesize} = $config{maxcachesize}*1048576;
-  $config{maximgcacheage} = $config{maximgcacheage}*86400;
-
-  die "\"handlerlocations\" in NewsClipper.cfg must be non-empty.\n"
-    if $#{$config{handlerlocations}} == -1;
-
-  # Put the handler locations on the include search path
-  unshift @INC,@{$config{handlerlocations}};
-
-  CheckRegistration;
-
-  dprint "Operating system:\n  $^O";
-  dprint "Version:\n  $VERSION, $config{product}";
-  dprint "Command line was:\n  $commandLine";
-
-  # Check that the user isn't trying to use the -i and -o flags for the Trial
-  # and Personal versions
-  if (($config{product} eq "Trial" ||
-       $config{product} eq "Personal") &&
-      (defined $opts{i} || defined $opts{o}))
-  {
-    die reformat dequote<<"    EOF";
-      The -i and -o flags are disabled in the Trial and Personal versions of
-      News Clipper. Please specify your input and output files in the
-      NewsClipper.cfg file.
-    EOF
-  }
-
-  # Override the config values if the user specified -i or -o.
-  $config{inputFiles} = ["$opts{i}"] if defined $opts{i};
-  $config{outputFiles} = ["$opts{o}"] if defined $opts{o};
-
-  # Check that the input files and output files match
-  if ($#{$config{inputFiles}} != $#{$config{outputFiles}})
-  {
-    die reformat dequote <<"    EOF";
-      Your input and output files are not correctly specified. Check your
-      configuration file NewsClipper.cfg.
-    EOF
-  }
-
-  # Check that the user isn't trying to process more than one input file for
-  # the Trial version
-  if ($#{$config{inputFiles}} > 0 && $config{product} eq "Trial")
-  {
-    die reformat dequote <<"    EOF";
-      Sorry, but the Trial version of News Clipper can only process one input
-      file.
-    EOF
-  }
-
-  # Check that the user isn't trying to process more than the registered
-  # number of files for the Personal version
-  if ($config{product} eq "Personal" &&
-      $#{$config{inputFiles}}+1 > $config{numberpages} )
-  {
-    die reformat dequote<<"    EOF";
-      Sorry, but this Personal version of News Clipper is only registered to
-      process $config{numberpages} input files.
-    EOF
-  }
-
-  die "No input files specified.\n" if $#{$config{inputFiles}} == -1;
-
-  # Check that they specified cachelocation and maxcachesize
-  die "cachelocation not specified in NewsClipper.cfg"
-    unless defined $config{cachelocation} &&
-           $config{cachelocation} ne '';
-  die "maxcachesize not specified in NewsClipper.cfg"
-    unless defined $config{maxcachesize} &&
-           $config{maxcachesize} != 0;
-}
-
-# ------------------------------------------------------------------------------
-
-sub HandleProxyPassword
+sub HandleProxyPassword()
 {
   # Handle the proxy password, if a username was given but not a password, and
   # a tty is available.
   if (($config{proxy_username} ne '') &&
-      (($config{proxy_password} eq '') && (-t)))
+      (($config{proxy_password} eq '') && (-t STDIN)))
   {
     unless (eval "require Term::ReadKey")
     {
@@ -460,42 +1055,36 @@ sub HandleProxyPassword
     $|=1;
 
     print "Please enter your proxy password: ";
-    my $DEV_TTY = new FileHandle("</dev/tty")
-      or die "Unable to open /dev/tty: $!\n";
-
-    # Temporarily disable strict subs so this will compile even though we
-    # haven't require'd Term::ReadKey yet.
-    no strict "subs";
 
     # Turn off echo to read in password
-    Term::ReadKey::ReadMode (2, $DEV_TTY);
-    $config{proxy_password} = Term::ReadKey::ReadLine (0, $DEV_TTY);
+    Term::ReadKey::ReadMode('noecho');
+
+    $config{proxy_password} = <STDIN>;
+    chomp($config{proxy_password});
 
     # Turn echo back on
-    Term::ReadKey::ReadMode (0, $DEV_TTY);
-
-    # Restore strict subs
-    use strict "subs";
+    Term::ReadKey::ReadMode ('restore');
 
     # Give the user a visual cue that their password has been entered
     print "\n";
 
-    chomp($config{proxy_password});
-    close($DEV_TTY) || warn "Unable to close /dev/tty: $!\n";
     $| = $oldBuffer;
   }
 }
 
 # ------------------------------------------------------------------------------
 
-# This function attempts to grab the installation from the registry for
-# Windows machines. It returns nothing if anything goes wrong, otherwise the
-# installation path.
-sub GetWinInstallDir
+# Attempts to grab the installation from the registry for Windows machines. It
+# returns nothing if anything goes wrong, otherwise the installation path.
+
+sub GetWinInstallDir()
 {
   return if ($^O ne 'MSWin32') && ($^O ne 'dos');
 
   require Win32::Registry;
+
+  # To get rid of "main::HKEY_LOCAL_MACHINE" used only once warning.
+  $main::HKEY_LOCAL_MACHINE = $main::HKEY_LOCAL_MACHINE;
 
   my $key = "SOFTWARE\\Spinnaker Software\\News Clipper\\$VERSION";
   my $TempKey;
@@ -520,11 +1109,29 @@ sub GetWinInstallDir
   return $value;
 }
 
+#-------------------------------------------------------------------------------
+
+# If we're in DEBUG mode, output the modules we used during this run. Be
+# careful not to try to do this if something bad happened before we loaded
+# NewsClipper::Globals, which set the DEBUG constant.
+
+END
+{
+  if (defined &DEBUG && DEBUG)
+  {
+    dprint "Here are all the modules used during this run, and their locations:";
+    foreach my $key (sort keys %INC)
+    {
+      dprint "  $key =>\n    $INC{$key}";
+    }
+  }
+}
+
 # ------------------------------------------------------------------------------
 
 # Needed by compiler
+
 #perl2exe_include constant
-#perl2exe_include jcode.pl
 #perl2exe_include NewsClipper/AcquisitionFunctions
 #perl2exe_include NewsClipper/Cache
 #perl2exe_include NewsClipper/HTMLTools
@@ -536,195 +1143,41 @@ sub GetWinInstallDir
 #perl2exe_include Time/CTime
 #perl2exe_include Date/Format
 #perl2exe_include Net/NNTP
-
-#------------------------------------------------------------------------------
-
-sub _main()
-{
-  # Make unbuffered for easier debugging.
-  $| = 1 if DEBUG;
-
-  for (my $i=0;$i <= $#{$config{inputFiles}};$i++)
-  {
-    dprint "Now processing $config{inputFiles}[$i] => $config{outputFiles}[$i]";
-
-    # Print a warning and skip if the file doesn't exist and isn't a text file.
-    # However, don't do the checks if the file is STDIN.
-    unless ($config{inputFiles}[$i] eq 'STDIN')
-    {
-      warn reformat "Input file $config{inputFiles}[$i] can't be found.\n"
-        and next unless -e $config{inputFiles}[$i];
-      warn reformat "Input file $config{inputFiles}[$i] is a directory.\n"
-        and next if -d $config{inputFiles}[$i];
-      warn reformat "Input file $config{inputFiles}[$i] is empty.\n"
-        and next if -z $config{inputFiles}[$i];
-    }
-
-    # Figure out if we were called as a CGI program
-    my $calledAsCgi = 0;
-    $calledAsCgi = 1 if defined $ENV{'SCRIPT_NAME'};
-
-    # We'll write to the file unless we were run as a CGI or if we're in DEBUG
-    # mode.
-    my $writeToFile = 1;
-    $writeToFile = 0
-      if DEBUG || $calledAsCgi || $config{outputFiles}[$i] eq 'STDOUT';
-
-    $config{inputFiles}[$i] = *STDIN if $config{inputFiles}[$i] eq 'STDIN';
-
-    # Print the content type if we're running as a CGI.
-    print "Content-type: text/html\n\n" if $calledAsCgi;
-
-    my $oldSTDOUT = new FileHandle;
-
-    # Redirect STDOUT to a temp file.
-    if ($writeToFile)
-    {
-      # Store the old STDOUT so we can replace it later.
-      $oldSTDOUT->open(">&STDOUT");
-
-      # If the user wants to see a copy of the output... (Doesn't work in
-      # Windows or DOS)
-      if ($opts{v} && ($^O ne 'MSWin32') && ($^O ne 'dos'))
-      {
-        # Make unbuffered
-        $| = 1;
-        open (STDOUT,"| tee $config{outputFiles}[$i].temp");
-      }
-      else
-      {
-        open (STDOUT,">$config{outputFiles}[$i].temp");
-      }
-    }
-
-    require NewsClipper::Parser;
-
-    # Okay, now do the magic. Parse the input file, calling the handlers
-    # whenever a special tag is seen.
-
-    my $p = new NewsClipper::Parser;
-    $p->parse_file($config{inputFiles}[$i]);
-
-    # Restore STDOUT to the way it was
-    if ($writeToFile)
-    {
-      close (STDOUT);
-      open(STDOUT, ">&".$oldSTDOUT->fileno()) or die "Can't restore STDOUT.\n";
-
-      # Replace the output file with the temp file. Move it to .del for OSes
-      # that have delayed deletes.
-      rename ($config{outputFiles}[$i], "$config{outputFiles}[$i].del");
-      unlink ("$config{outputFiles}[$i].del");
-      rename ("$config{outputFiles}[$i].temp",$config{outputFiles}[$i]);
-      chmod 0755, $config{outputFiles}[$i];
-    }
-
-    # Stop after the first file if we're being run as a CGI. (I guess...)
-    last if $calledAsCgi;
-  }
-}
-
-# ------------------------------ MAIN PROGRAM ---------------------------------
-
-$commandLine = "$0 @ARGV";
-
-# See if the user specified the input and output files on the command line.
-getopt('ioc',\%opts);
-
-SetupConfig();
-
-if (DEBUG)
-{
-  dprint "Options are:";
-  while (my ($k,$v) = each %opts)
-  {
-    dprint "  $k: $v";
-  }
-
-  dprint "INC is:";
-  foreach my $i (@INC)
-  {
-    dprint "  $i";
-  }
-
-  dprint "Home directory:\n  $home";
-  
-  use Cwd;
-  dprint "Current directory:\n  ",cwd,"\n";
-}
-
-print_usage and exit(0) if $opts{h};
-
-HandleProxyPassword();
-
-# Do timers if we aren't in debug mode and not on the broken Windows platform
-if (DEBUG || ($^O eq 'MSWin32') || ($^O eq 'dos'))
-{
-  _main;
-}
-else
-{
-  $SIG{ALRM} = sub { die "timeout" };
-
-  eval
-  {
-    alarm($config{scriptTimeout});
-    _main;
-    alarm(0);
-  };
-
-  if ($@)
-  {
-    # See if it was our timeout
-    if ($@ =~ /timeout/)
-    {
-      die "News Clipper script timeout has expired. News Clipper killed.\n";
-    }
-    else
-    {
-      # The eval got aborted, so we need to stop the alarm
-      alarm (0);
-      # and print the error. (I'm not simply die'ing here because I don't like
-      # the annoying ...propagated message. I don't know if this is the right
-      # way to do this, but it works.)
-      print $@;
-      exit 1;
-    }
-  }
-  exit 0;
-}
+#perl2exe_include File/Spec/Win32.pm
 
 #-------------------------------------------------------------------------------
 
-END
-{
-  if (DEBUG)
-  {
-    dprint "Here are all the modules used during this run, and their locations:";
-    foreach my $key (sort keys %INC)
-    {
-      dprint "  $key =>\n    $INC{$key}";
-    }
-  }
-}
-
-#-------------------------------------------------------------------------------
+__END__
 
 =head1 NAME
 
-News Clipper - downloads and integrates dynamic information into your webpage
+News Clipper - downloads and integrates dynamic information into web pages
 
 =head1 SYNOPSIS
 
-NewsClipper.pl [B<-anrv>] [B<-i> inputfile] [B<-o> outputfile]
-  [B<-c> configfile]
+ Using the input and output files specified in either the system-wide
+ NewsClipper.cfg file, or the personal NewsClipper.cfg file in
+ ~/.NewsClipper
+
+ $ NewsClipper.pl [-anrv] [-c configfile]
+
+ Override the input and output files
+
+ $ NewsClipper.pl [-anrv] [-c configfile] \
+   -i inputfile -o outputfile
+
+ Provide a sequence of News Clipper commands on the command line
+
+ $ NewsClipper.pl [-anrv] [-c configfile] \
+   -e "handlername, handlername, handlername"
+
 
 =head1 DESCRIPTION
 
 I<News Clipper> grabs dynamic information from the internet and integrates it
 into your webpage. Features include modular extensibility, timeouts to handle
-dead servers without hanging the script, user-defined update times, automatic
-installation of modules, and compatibility with cgi-wrap. 
+dead servers without hanging the script, user-defined update times, and
+automatic installation of modules. 
 
 News Clipper takes an input HTML file, which includes special tags of the
 form:
@@ -735,12 +1188,13 @@ form:
     <output name=Z>
   -->
 
-where I<X> represents a data source, such as "apnews", "slashdot", etc. When
-such a tag is encountered, News Clipper attempts to load and execute the
-handler to acquire the data. Then the data is sent to the filter named by
+where I<X> represents a data source, such as "yahootopstories", "slashdot",
+etc. When such a tag is encountered, News Clipper attempts to load and execute
+the handler to acquire the data. Then the data is sent to the filter named by
 I<Y>, and then on to the output handler named by I<Z>.  If the handler can not
 be found, the script asks for permission to attempt to download it from the
 central repository.
+
 
 =head1 HANDLERS
 
@@ -763,30 +1217,66 @@ APIs, I<AcquisitionFunctions> and I<HTMLTools>. For a complete description of
 these APIs, as well as suggestions on how to write handlers, visit
 http://www.newsclipper.com/handlers.html.
 
+News Clipper has the ability to automatically download handlers whose
+functionality did not change relative to the currently installed version.
+This means that you can safely download the update and be guaranteed that it
+will not break your existing News Clipper commands.  These "bugfix updates"
+are controlled by the auto_dl_bugfix_updates value in the NewsClipper.cfg
+file.
+
+You can also tell News Clipper to download "functional updates", which are
+handlers whose interface has changes relative to the version you have. These
+updates are the most recent versions of the handler, but they contain changes
+that may break existing News Clipper commands.
+
 
 =head1 OPTIONS AND ARGUMENTS
 
 =over 4
 
-=item B<-i>
+=item B<-i> inputfile
 
-Override the input file specified in the configuration file.
+Override the input file specified in the configuration file. The special
+filename "STDIN" gets input from standard input (useful for piping commands to
+News Clipper).
 
-=item B<-o>
+=item B<-o> outputfile
 
-Override the output file specified in the configuration file.
+Override the output file specified in the configuration file. The special
+filename "STDOUT" sends output to standard output instead of a file.
+
+=item B<-e> commands
+
+Run the specified handler using the default filters and output handlers, and
+output the result to STDOUT. This option overrides B<-i> and B<-o>. Commands
+can be in the form of a normal News Clipper bracket syntax, or as a
+comma-separated list. For example, the following are equivalent:
+
+ $ echo '<!-- newsclipper <input name=date style=day><output name=string> -->' | \
+   NewsClipper.pl -i STDIN -o STDOUT
+
+ $ NewsClipper.pl -e 'date style=day,string'
+
+ $ NewsClipper.pl -e '<input name=date style=day><output name=string>'
+
+Note that commas can not be escaped -- commas that appear in quotes, for
+example, B<will> be interpreted as delimiters between commands.
 
 =item B<-c>
 
 Use the specified file as the configuration file, instead of NewsClipper.cfg.
 
-=item B<-a>
-
-Automatically download all handlers that are not installed locally.
-
 =item B<-n>
 
-Check for new versions of handlers while processing input file.
+Check for new bugfix and functional updates to any handlers encountered.
+
+=item B<-a>
+
+Automatically download any bugfix or functional updates to handlers News
+Clipper processes. Use the auto_dl_bugfix_updates in the configuration file
+to always download bugfix versions, but not functional updates. This flag
+should only be used when News Clipper is run interactively, since functional
+updates can break web pages that rely on the older functionality.
 
 =item B<-r>
 
@@ -810,65 +1300,105 @@ standard output. Does not work on Windows or DOS.
 The file NewsClipper.cfg contains the configuration. News Clipper will first
 look for this file in the system-wide location specified by the NEWSCLIPPER
 environment variable. News Clipper will then load the user's NewsClipper.cfg
-from $home/.NewsClipper. Options that appear in the personal configuration
-file override those in the system-wide configuration file. In this file you
-can specify the following:
+from $home/.NewsClipper. Any options that appear in the personal configuration
+file override those in the system-wide configuration file, except for the
+modulepath option. In this file you can specify the following:
 
 =over 2
 
-=item *
+=item $ENV{TZ}
 
-Multiple input and output files.
+The timezone for Windows. (This is automatically detected on Unix-like
+platforms.)
 
-=item *
+=item email
 
-The timeout value for the script. This puts a limit on the total time the
-script can execute, which prevents it from hanging.
+The user's email address. This is used for registration for the commercial
+version.
 
-=item *
+=item regKey
 
-The timeout value for socket connections. This allows the script to recover
-from unresponsive servers.
+The registration key. This is used for registration for the commercial
+version.
 
-=item *
+=item inputFiles, outputFiles
 
-Your proxy host. For example, "http://proxy.host.com:8080/"
+Multiple input and output files. The first input file is transformed into the
+first output file, the second input file to the second output file, etc.
 
-=item *
+=item handlerlocations
 
-The locations of handlers. For example, ['dir1','dir2'] would look for handlers
-in dir1/NewsClipper/Handler/ and dir2/NewsClipper/Handler/. Note that while
-installing handlers, the first directory is used.
+The locations of handlers. For example, ['dir1','dir2'] would look for
+handlers in dir1/NewsClipper/Handler/ and dir2/NewsClipper/Handler/. Note that
+while installing handlers, the first directory is used. This can be used to
+provide a location for a single repository of handlers, which can be shared
+by all users.
 
-=item *
-
-The size and location of the HTML cache News Clipper uses to store data in
-between the update times specified by the handlers.
-
-=item *
+=item modulepath
 
 The location of News Clipper's modules, in case the aren't in the standard
 Perl module path. (Set during installation.)
 
-=item *
+=item cachelocation
 
-The maximum age and location of images stored locally by the I<cacheimages>
-filter.
+The location of the cache in the file system.
 
-=item *
+=item maxcachesize
 
-DOS/Windows users can specify their time zone. (Set during installation.)
+The maximum size of the cache in megabytes. It should be at least 5.
+
+=item scriptTimeout
+
+The timeout value for the script. This puts a limit on the total time the
+script can execute, which prevents it from hanging. This does not work on
+Windows or DOS.
+
+=item socketTimeout
+
+The timeout value for socket connections. This allows the script to recover
+from unresponsive servers.
+
+=item socketTries
+
+The number of times to try a connection before giving up.
+
+=item proxy
+
+Your proxy host. For example, "http://proxy.host.com:8080/"
 
 =back
 
-See the file NewsClipper.cfg for examples.
+NewsClipper.cfg also contains handler-specific configuration options. These
+options are generally documented in the handler's syntax documentation.
 
+The NewsClipper.cfg that comes with the distribution contains default
+configuration information for the cacheimages handler:
+
+=over 2
+
+=item imgcachedir
+
+The location in the filesystem of the image cache. This location should be
+visible from the web.
+
+=item imgcacheurl
+
+The URL that corresponds to the image cache directory specified by
+imgcachedir. 
+
+=item maximgecacheage
+
+The maximum age of images in the image cache. Old images will be removed from
+the cache.
+
+=back
 
 =head1 RUNNING
 
-You can run NewsClipper.pl from the command line, but a better
-way is to run the script as a cron job. To do this, create a .crontab file
-with something similar to the following:
+You can run NewsClipper.pl from the command line. The B<-e>, B<-i>, and B<-o>
+flags allow you to test your input files. When you are happy with the way
+things are working, you should run News Clipper as a cron job. To do this,
+create a .crontab file with something similar to the following:
 
 =over 4
 
@@ -876,16 +1406,7 @@ with something similar to the following:
 
 =back
 
-You can also have cgiwrap call your startup page, but this would mean having to
-wait for the script to execute (2 to 30 seconds, depending on the staleness of
-the information). To do this, place NewsClipper.pl and NewsClipper.cfg in your
-public_html/cgi-bin directory, and use a URL similar to the following:
-
-=over 4
-
-http://www.server.com/cgi-bin/cgiwrap?user=USER&script=NewsClipper.pl
-
-=back
+"man cron" for more information.
 
 =head1 PREREQUISITES
 
@@ -896,10 +1417,19 @@ See the News Clipper distribution's README file for more information.
 
 Handlers that you download may require additional modules.
 
+=head1 NOTES
+
+News Clipper has 2 web sites: the open source homepage at
+http://newsclipper.sourceforge.net, and the commercial homepage at
+http://www.newsclipper.com/ The open source homepage has instructions for
+getting the source via CVS, and has documentation aimed at developers. The
+commercial web site contains a FAQ, information for buying the commercial
+version, and more.
+
 =head1 AUTHOR
 
-Spinnaker Software, Inc.
 David Coppit, <david@coppit.org>, http://coppit.org/
+Spinnaker Software, Inc.
 
 =begin CPAN
 

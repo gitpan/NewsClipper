@@ -3,15 +3,23 @@
 # use perl                                  -*- mode: Perl; -*-
 
 use strict;
+use File::Cache;
 
-my $VERSION = 0.50;
+my $VERSION = 0.62;
+my $COMPATIBLE_NEWS_CLIPPER_VERSION = 1.18;
 
 my %info;
-# author
-# email
+# author_name
+# author_email
+# maintainer_name
+# maintainer_email
 # name
 # description
+# category
 # url: url for the web page
+# license
+# for_news_clipper_version
+# language
 # urlcode: code that sets "my $url"
 # defaults: code to set defaults
 # attributes: an array of all the attributes and their possible values, as
@@ -22,6 +30,9 @@ my %info;
 # date: code for the GetUpdateTimes function
 # defaulthandlers: code that contains the GetDefaultHandlers function
 
+my $handlerserver = 'handlers.newsclipper.com';
+#my $handlerserver = 'localhost';
+
 sub Prompt;
 my ($editor,@prompt);
 
@@ -31,11 +42,14 @@ help you write handlers. Well, actually, it will help you write *Acquisition*
 handlers. General filter and output handlers are a bit more involved, and it's
 not likely that you'll need to write them.
 
-In order to make your life easier, you can now use your favorite text editor
-to enter information. The main control will happen here at the script, but
-most of the data entry will be done in the editor.  Just enter the requested
-information in the space immediately following the questions. You can can
-create more space between questions if you need it.
+This utility will invoke a text editor to allow you to enter responses.  The
+main control will happen here at the script, but most of the data entry will
+be done in the editor.  Just enter the requested information in the space
+between the prompts, which look like this:
+
+vvvvv
+<THIS IS WHERE YOU ANSWER>
+^^^^^
 
 Please read the hints for handler writers, at
 http://www.newsclipper.com/handlers.htm#Handler_Tutorial
@@ -64,7 +78,7 @@ Enter the handler's name, in all lower case.
 EOF
 
 push @prompt,<<EOF;
-Gimme a one line description of the handler, so people can understand what it
+Enter a one line description of the handler, so people can understand what it
 does when it is listed on the handler webpage.
 EOF
 
@@ -74,7 +88,11 @@ comes from.
 EOF
 
 push @prompt,<<EOF;
-Sometimes people like to slap a license on their code that gives other people
+What language will the handler be most suited for?
+EOF
+
+push @prompt,<<EOF;
+Sometimes people like to put a license on their code that gives other people
 limited rights to modify, copy, sell, etc. it. The GPL is pretty popular, as
 is the Artistic license. For a summary of the major open source licenses, see
 http://www.oreilly.com/catalog/opensources/book/perens.html
@@ -82,15 +100,41 @@ http://www.oreilly.com/catalog/opensources/book/perens.html
 Enter the license type, if you want to license your code:
 EOF
 
-($info{author},$info{email},$info{name},$info{description},$info{url},$info{license}) =
-  Prompt(@prompt);
+push @prompt,<<EOF;
+Please choose a category for your handler. If you would like to use a category
+that is not here, you can enter anything you would like now. However, you will
+need to email the database maintainer at SubmitHandler\@newsclipper.com and
+ask that the category be added before you submit the handler to the database.
+
+General
+Tech
+Business
+Sports
+Science
+Weather
+Music
+Local
+Humor
+Comics
+Linux
+Programming
+Personal Computers
+Miscellaneous
+EOF
+
+($info{author_name},$info{author_email},$info{name},$info{description},
+  $info{url},$info{language},$info{license},$info{category}) = Prompt(@prompt);
+
+$info{maintainer_name} = $info{author_name};
+$info{maintainer_email} = $info{author_email};
+$info{for_news_clipper_version} = $COMPATIBLE_NEWS_CLIPPER_VERSION;
 
 #-------------------------------------------------------------------------------
 
 print <<EOF;
-Some URLs depend on what parameters the user enters. For example, the
-yahootopstories handler can grab data from several different URLs that all
-share a common format.
+Some handlers get their information from different URLs, depending on what
+parameters the user enters. For example, the yahootopstories handler can
+grab data from several different URLs that all share a common format.
 
 Will your URL depend on a parameter?
 EOF
@@ -120,10 +164,10 @@ my ($attr,$values,$default) = Prompt(@prompt);
 $values =~ s/\n/,\n    /gs;
 
 $info{urlcode} = "  my \%urlMap = (\n    $values,\n  );\n\n";
-$info{urlcode} .= "  my \$url = \$urlMap{\$attributes->{'$attr'}};\n";
+$info{urlcode} .= "  my \$url = \$urlMap{\$attributes->{'$attr'}};";
 
-$info{defaults} .= "  \$attributes->{'$attr'} = '$default'\n    unless defined ".
-                   "\$attributes->{'$attr'};\n";
+$info{defaults} .= "  \$attributes->{'$attr'} = '$default'\n    " .
+                   "unless defined \$attributes->{'$attr'};\n";
 
 $values =~ s/'\s*=>\s*'[^']+'/|/gs;
 $values =~ s/['\n ,]//g;
@@ -138,7 +182,7 @@ What is the URL from which News Clipper should grab the data?
 EOF
 
 ($info{urlcode}) = Prompt(@prompt);
-$info{urlcode} = "  my \$url = '$info{urlcode}';\n";
+$info{urlcode} = "  my \$url = '$info{urlcode}';";
 }
 
 #-------------------------------------------------------------------------------
@@ -241,8 +285,8 @@ $info{patterncode} = "  my \%patternMap = (\n    $values,\n  );\n\n";
 $info{patterncode} .= "  my \$startPattern = \$patternMap{\$attributes->{'$attr'}}[0];\n";
 $info{patterncode} .= "  my \$endPattern = \$patternMap{\$attributes->{'$attr'}}[1];\n";
 
-$info{defaults} .= "  \$attributes->{'$attr'} = '$default'\n    unless defined ".
-                   "\$attributes->{'$attr'};\n";
+$info{defaults} .= "  \$attributes->{'$attr'} = '$default'\n    " .
+                   "unless defined \$attributes->{'$attr'};\n";
 
 $values =~ s/'\s*=>\s*\[[^\]]+\]/|/gs;
 $values =~ s/['\n ,]//g;
@@ -294,11 +338,11 @@ sub GetDefaultHandlers
   my \$self = shift;
   my \$inputAttributes = shift;
 
-  my \@returnVal = (
-    {'name' => 'string'},
-  );
+  my \$returnVal =<<'  EOF';
+    <output name='string'>
+  EOF
 
-  return \@returnVal;
+  return \$returnVal;
 }
 EOF
 }
@@ -310,12 +354,12 @@ sub GetDefaultHandlers
   my \$self = shift;
   my \$inputAttributes = shift;
 
-  my \@returnVal = (
-    {'name' => 'limit', 'number' => 10},
-    {'name' => 'array'}
-  );
+  my \$returnVal =<<'  EOF';
+    <filter name='limit' number=10>
+    <output name='array'>
+  EOF
 
-  return \@returnVal;
+  return \$returnVal;
 }
 EOF
 }
@@ -357,7 +401,7 @@ if ($datespec eq '')
 }
 else
 {
-  $datespec =~ s/\n/',\n    ,'/gs;
+  $datespec =~ s/\n/',\n    '/gs;
 
   $info{date} =<<EOF;
 sub GetUpdateTimes
@@ -371,18 +415,17 @@ EOF
 
 my $attributes;
 $attributes = join ' ',@{$info{attributes}} if defined $info{attributes};
-print "#####$attributes###\n";
 $attributes = '' unless defined $info{attributes};
 
 $attributes =~ s/:([^)]+)\)/=X/g;
 $attributes = " $attributes" if $attributes ne '';
 
 my $att2;
-$att2 = join "\n#   ",@{$info{attributes}} if defined $info{attributes};
+$att2 = join "\n  ",@{$info{attributes}} if defined $info{attributes};
 $att2 = '' unless defined $info{attributes};
-$att2 = "\n#   $att2" if $att2 ne '';
+$att2 = "\n  $att2" if $att2 ne '';
 
-my $code =<<EOF;
+my $code =<<"    EOF";
 --------> THESE LINES WILL BE REMOVED BY MAKEHANDLER               <--------
 --------> EDIT THIS VERSION OF THE HANDLER IF YOU NEED TO.         <--------
 --------> FOR EXAMPLE, IF YOU WERE DOING THE "ASTROPIC" HANDLER,   <--------
@@ -391,38 +434,92 @@ my $code =<<EOF;
 --------> AS THE "GETDEFAULTHANDLERS" FUNCTION.                    <--------
 # -*- mode: Perl; -*-
 
+package NewsClipper::Handler::Acquisition::$info{name};
+
+use vars qw( \@ISA \$VERSION \%handlerInfo );
+
 --------> FIX THESE COMMENTS. ADD ANY ADDITIONAL ATTRIBUTES YOU    <--------
 --------> NEED, AND EXPLAIN WHAT THE ATTRIBUTES MEAN. THIS IS THE  <--------
 --------> DOCUMENTATION THAT THE USER WILL REFER TO IN ORDER TO    <--------
 --------> USE YOUR HANDLER.                                        <--------
-# AUTHOR: $info{author}
-# EMAIL: $info{email}
-# ONE LINE DESCRIPTION: $info{description}
-# URL: $info{url}
-# TAG SYNTAX:
-# <input name=$info{name}$attributes>$att2
-# LICENSE: $info{license}
-# NOTES:
-
-package NewsClipper::Handler::Acquisition::$info{name};
+\$handlerInfo{'Author_Name'}              = '$info{author_name}';
+\$handlerInfo{'Author_Email'}             = '$info{author_email}';
+\$handlerInfo{'Maintainer_Name'}          = '$info{maintainer_name}';
+\$handlerInfo{'Maintainer_Email'}         = '$info{maintainer_email}';
+\$handlerInfo{'Description'}              = <<'EOF';
+$info{description}
+EOF
+\$handlerInfo{'Category'}                 = '$info{category}';
+\$handlerInfo{'URL'}                      = <<'EOF';
+$info{url}
+EOF
+\$handlerInfo{'License'}                  = '$info{license}';
+\$handlerInfo{'For_News_Clipper_Version'} = '$info{for_news_clipper_version}';
+\$handlerInfo{'Language'}                 = '$info{language}';
+\$handlerInfo{'Notes'}                    = <<'EOF';
+EOF
+\$handlerInfo{'Syntax'}                   = <<'EOF';
+<input name=$info{name}$attributes>$att2
+EOF
 
 use strict;
 use NewsClipper::Handler;
-use NewsClipper::Types;
-use vars qw( \@ISA \$VERSION );
 \@ISA = qw(NewsClipper::Handler);
 
-# DEBUG for this package is the same as the main.
-use constant DEBUG => main::DEBUG;
+# - The first number should be incremented when a change is made to the
+#   handler that will break people's input files.
+# - The second number should be incremented when a change is made that won't
+#   break people's input files, but changes the functionality.
+# - The third number should be incremented when only a bugfix is applied.
 
-sub dprint;
-*dprint = \\&main::dprint;
-
-use NewsClipper::AcquisitionFunctions qw( $info{getfunction} );
-
-\$VERSION = 0.1;
+\$VERSION = do {my \@r=('0.1.0'=~/\\d+/g);sprintf "\%d."."\%02d"x\$#r,\@r};
 
 # ------------------------------------------------------------------------------
+
+sub ComputeURL
+{
+  my \$self = shift;
+  my \$attributes = shift;
+
+$info{urlcode}
+
+  return \$url;
+}
+
+# ------------------------------------------------------------------------------
+
+# This subroutine checks the handler's attributes to make sure they are valid,
+# and sets any default attributes if necessary.
+
+sub ProcessAttributes
+{
+  my \$self = shift;
+  my \$attributes = shift;
+  my \$handlerRole = shift;
+
+  # Set defaults here. You can safely delete this function if your handler has
+  # no attributes with default values.
+
+  # \$attributes->{'some_attribute'} = 'default_value'
+  #   unless defined \$attributes->{'some_attribute'};
+
+  # Verify any attributes you need to here. Output an error and return undef
+  # if something is wrong.
+
+  # unless (\$attributes->{somevalue} > 0)
+  # {
+  #   error "The \\"somevalue\\" attribute for handler \\"HANDLERNAME\\" " .
+  #     "should be greater than 0.\\n";
+  #   return undef;
+  # }
+
+$info{defaults}
+
+  return \$attributes;
+}
+
+# ------------------------------------------------------------------------------
+
 
 # This function is used to get the raw data from the URL.
 sub Get
@@ -430,9 +527,10 @@ sub Get
   my \$self = shift;
   my \$attributes = shift;
 
-$info{defaults}
-$info{urlcode}
 $info{patterncode}
+
+  my \$url = \$self->ComputeURL(\$attributes);
+
 $info{getcode}
 --------> IF YOU NEED TO DO ADDITIONAL PROCESSING, LIKE A          <--------
 --------> \@\$data = grep {/\d{5}.gif/} \@\$data;                      <--------
@@ -453,7 +551,7 @@ $info{date}
 
 1;
 
-EOF
+    EOF
 
 open FILE,">MakeHandler.inp";
 print FILE $code;
@@ -467,6 +565,9 @@ close FILE;
 
 $finishedcode =~ s/-------->[^<]+<--------//gs;
 $finishedcode =~ s/\n\n\n+/\n\n/gs;
+
+$finishedcode =~ s/^\n*//s;
+$finishedcode =~ s/\n*$/\n/s;
 
 open FILE, ">$info{name}.pm";
 print FILE $finishedcode;
@@ -492,7 +593,7 @@ sub Prompt
 open FILE,">MakeHandler.inp";
 foreach my $data (@prompt)
 {
-  print FILE $data,"\n","-"x78,"\n";
+  print FILE $data,"vvvvv\n\n","^^^^^\n","-"x78,"\n";
 }
 close FILE;
 
@@ -511,18 +612,16 @@ foreach my $data (@prompt)
   my $response = undef;
   my $pattern = $data;
 
-  # Escape special symbols
-  $pattern =~ s/\\/\\\\/gs;
-  $pattern =~ s/([\{\}\(\)\^\[\]\+\*\.\$\?])/\\$1/gs;
-
-  ($response) = $returnString =~ /$pattern\s*(.*?)\s*------------/s;
+  ($response) = $returnString =~ /vvvvv\s*(.*?)\s*\^\^\^\^\^/s;
 
   unless (defined $response)
   {
     print "Sorry, I couldn't figure out what you answered for the ",
-          "question:\n\n$data\nTry again.\n";
+          "question:\n\n$data\nTry again. <press enter to confirm>\n";
     goto RETRY2;
   }
+
+  $returnString =~ s/vvvvv/vvvv/;
 
   push @returnvals, $response;
 }
@@ -531,6 +630,12 @@ foreach my $data (@prompt)
 
 return @returnvals;
 }
+
+#-------------------------------------------------------------------------------
+
+# Needed by compiler
+
+#perl2exe_include File/Spec/Win32
 
 #-------------------------------------------------------------------------------
 

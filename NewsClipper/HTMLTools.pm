@@ -12,79 +12,96 @@ use Exporter;
 use vars qw( @ISA @EXPORT $VERSION );
 
 @ISA = qw( Exporter );
-@EXPORT = qw( ExtractText MakeLinksAbsolute StripTags EscapeHTMLChars 
-              StripAttributes HTMLsubstr TrimOpenTags );
+@EXPORT = qw( ExtractText MakeLinksAbsolute StripTags
+              EscapeHTMLChars StripAttributes HTMLsubstr
+              TrimOpenTags GetAttributeValue );
 
-$VERSION = 0.5;
+$VERSION = 0.61;
 
-BEGIN
-{
-  # We do this in the BEGIN block to get the DEBUG constant before the rest of
-  # the code is compiled into bytecode.
-  require NewsClipper::Globals;
-  NewsClipper::Globals->import;
-}
+use NewsClipper::Globals;
 
 # ------------------------------------------------------------------------------
 
-# Takes a bunch of html in the first argument (as one long string). Uses the
-# remaining arguments to strip out attributes. By default, these are taken to
-# be alt,class
-sub StripAttributes
+# Takes a bunch of html in the first argument (as one long string or a ref to
+# one). Uses the remaining arguments to strip out attributes. By default,
+# these are taken to be alt,class. Takes one long string (or a reference to
+# one) and returns the same.
+
+sub StripAttributes($@)
 {
-  my $html = shift @_;
+  my $html = shift;
   my @tags = @_;
 
-  my $type = ref $html || 'String';
+  return undef unless defined $html;
 
-  if ($type ne 'String')
+  unless (UNIVERSAL::isa(\$html,'SCALAR') || UNIVERSAL::isa($html,'SCALAR'))
   {
     die reformat dequote<<"    EOF";
-      You've tried to call StripAttributes with a value of type "$type", but
-      it only takes values of type "String".
+      StripAttributes only takes values of type "SCALAR".
     EOF
+  }
+
+  my $returnRef = 0;
+
+  if (ref $html)
+  {
+    $returnRef = ref $html;
+    $html = $$html;
   }
 
   @tags = qw(alt class)
     if $#tags == -1;
 
   # Make the pattern from @tags
-  my $temp = $";
-  $" = '|';
+  local $" = '|';
   my $pattern = "@tags";
-  $" = $temp;
 
-  # Strip out anything that matches the pattern inside a tag with ' quotes
-  $html =~ s#(<[^>]+?)\s*\b($pattern)\b\s*=\s*'[^']+'([^>]*>)#$1$3#sig;
+  my $oldhtml;
+  do
+  {
+    $oldhtml = $html;
 
-  # Strip out anything that matches the pattern inside a tag with " quotes
-  $html =~ s#(<[^>]+?)\s*\b($pattern)\b\s*=\s*"[^"]+"([^>]*>)#$1$3#sig;
+    # Strip out anything that matches the pattern inside a tag with ' quotes
+    $html =~ s#(<[^>]+?)\s*\b($pattern)\b\s*=\s*'[^']+'([^>]*>)#$1$3#sig;
 
-  # Strip out anything that matches the pattern inside a tag without quotes
-  $html =~ s#(<[^>]+?)\s*\b($pattern)\b\s*=\s*\S+([^>]*>)#$1$3#sig;
+    # Strip out anything that matches the pattern inside a tag with " quotes
+    $html =~ s#(<[^>]+?)\s*\b($pattern)\b\s*=\s*"[^"]+"([^>]*>)#$1$3#sig;
 
+    # Strip out anything that matches the pattern inside a tag without quotes
+    $html =~ s#(<[^>]+?)\s*\b($pattern)\b\s*=\s*[^'"]\S*[^'"]([^>]*>)#$1$3#sig;
+  } while ($oldhtml ne $html);
+
+  return bless (\$html,$returnRef) if $returnRef;
   return $html;
 }
 
 # ------------------------------------------------------------------------------
 
-# Takes a bunch of html in the first argument (as one long string). Uses the
-# remaining arguments to strip out tags. By default, these are taken to be
-# strong,h1,h2,h3,h4,h5,h6,b,i,u,tt,font,big,small,strike,
-# which (hopefully) strips out the formatting.
-sub StripTags
+# Takes a bunch of html in the first argument (as one long string or a ref to
+# one). Uses the remaining arguments to strip out tags. By default, these are
+# taken to be strong,h1,h2,h3,h4,h5,h6,b,i,u,tt,font,big,small,strike, which
+# (hopefully) strips out the formatting.
+
+sub StripTags($@)
 {
-  my $html = shift @_;
+  my $html = shift;
   my @tags = @_;
 
-  my $type = ref $html || 'String';
+  return undef unless defined $html;
 
-  if ($type ne 'String')
+  unless (UNIVERSAL::isa(\$html,'SCALAR') || UNIVERSAL::isa($html,'SCALAR'))
   {
-    die reformat dequote <<"    EOF";
-      You've tried to call StripAttributes with a value of type "$type", but
-      it only takes values of type "String".
+    die reformat dequote<<"    EOF";
+      StripTags only takes values of type "SCALAR".
     EOF
+  }
+
+  my $returnRef = 0;
+
+  if (ref $html)
+  {
+    $returnRef = ref $html;
+    $html = $$html;
   }
 
   @tags = qw(strong em h1 h2 h3 h4 h5 h6 b i u tt font big small strike)
@@ -99,6 +116,7 @@ sub StripTags
   # Strip out anything that matches the pattern
   $html =~ s#<\s*/?\b($pattern)\b[^>]*>##sig;
 
+  return bless (\$html,$returnRef) if $returnRef;
   return $html;
 }
 
@@ -106,21 +124,30 @@ sub StripTags
 
 # Extracts all text between the starting and ending patterns. '^' and '$' can
 # be used for the starting and ending patterns to signify start of text and
-# end of text.
-sub ExtractText
+# end of text. Takes one long string (or a reference to one) and returns the
+# same.
+
+sub ExtractText($$$)
 {
   my $html = shift;
   my $startPattern = shift;
   my $endPattern = shift;
 
-  my $type = ref $html || 'String';
+  return undef unless defined $html;
 
-  if ($type ne 'String')
+  unless (UNIVERSAL::isa(\$html,'SCALAR') || UNIVERSAL::isa($html,'SCALAR'))
   {
-    die <<"    EOF";
-      You've tried to call StripAttributes with a value of type "$type", but
-      it only takes values of type "String".
+    die reformat dequote<<"    EOF";
+      ExtractText only takes values of type "SCALAR".
     EOF
+  }
+
+  my $returnRef = 0;
+
+  if (ref $html)
+  {
+    $returnRef = ref $html;
+    $html = $$html;
   }
 
   # Makes things a lot faster
@@ -132,8 +159,8 @@ sub ExtractText
   }
   if (($startPattern ne '^') && ($endPattern ne '$'))
   {
-    $html =~ s/.*?$startPattern(.*?)$endPattern.*/$1/s;
-    return '' if $1 eq '';
+    return '' unless $html =~ s/.*?$startPattern//s;
+    return '' unless $html =~ s/$endPattern.*//s;
     return $html;
   }
   if (($startPattern ne '^') && ($endPattern eq '$'))
@@ -149,27 +176,37 @@ sub ExtractText
     return $html;
   }
 
+  return bless (\$html,$returnRef) if $returnRef;
   return $html;
 }
 
 # ------------------------------------------------------------------------------
 
-# Takes a bunch of html in the first argument (as one long string). Uses the
-# remaining arguments to trim unclosed tags from the beginning and end of the
-# html. By default, these are taken to be every possible enclosing-style tag.
-sub TrimOpenTags
+# Takes a bunch of html in the first argument (as one long string or a ref to
+# one). Uses the remaining arguments to trim unclosed tags from the beginning
+# and end of the html. By default, these are taken to be every possible
+# enclosing-style tag.
+
+sub TrimOpenTags($@)
 {
-  my $html = shift @_;
+  my $html = shift;
   my @tags = @_;
 
- my $type = ref $html || 'String';
+  return undef unless defined $html;
 
-  if ($type ne 'String')
+  unless (UNIVERSAL::isa(\$html,'SCALAR') || UNIVERSAL::isa($html,'SCALAR'))
   {
-    die <<"    EOF";
-      You've tried to call StripAttributes with a value of type "$type", but
-      it only takes values of type "String".
+    die reformat dequote<<"    EOF";
+      TrimOpenTags only takes values of type "SCALAR".
     EOF
+  }
+
+  my $returnRef = 0;
+
+  if (ref $html)
+  {
+    $returnRef = ref $html;
+    $html = $$html;
   }
 
   @tags = qw(strong em h1 h2 h3 h4 h5 h6 b i u tt font big small strike a html
@@ -206,80 +243,110 @@ sub TrimOpenTags
     }
   }
 
+  return bless (\$html,$returnRef) if $returnRef;
   return $html;
 }
 
 # ------------------------------------------------------------------------------
 
 # Takes a substring from HTML, but only counts the non-tag characters. It also
-# tries to remove starting HTML tags that have been trimmed off...
-# Arguments are the text, an offset, and the length.
-sub HTMLsubstr
+# tries to remove starting HTML tags that have been trimmed off...  Arguments
+# are the text, an offset, and the length. Takes one long string (or a
+# reference to one) and returns the same.
+
+sub HTMLsubstr($$;$)
 {
   my $html = shift;
   my $offset = shift;
   my $length = shift || 32700;
 
-  my $type = ref $html || 'String';
+  return undef unless defined $html;
 
-  if ($type ne 'String')
+  unless (UNIVERSAL::isa(\$html,'SCALAR') || UNIVERSAL::isa($html,'SCALAR'))
   {
-    die <<"    EOF";
-      You've tried to call StripAttributes with a value of type "$type", but
-      it only takes values of type "String".
+    die reformat dequote<<"    EOF";
+      HTMLsubstr only takes values of type "SCALAR".
     EOF
   }
 
-  # First make a copy of the html
-  my $pattern = $html;
+  my $returnRef = 0;
 
-  # Turn every tag and its contents into ZZZs
-  $pattern =~ s/<([^>]+)>/my $temp = $1;$temp =~ s#.#Z#sg;"Z$temp\Z"/esg;
+  if (ref $html)
+  {
+    $returnRef = ref $html;
+    $html = $$html;
+  }
 
-  # Turn newlines into ZZZs
-  $pattern =~ s/\n/Z/sg;
+  # First split the html into characters
+  my @chars = $html =~ /(.)/sg;
 
-  # Count all the non-Zs, ignoring sequences of Zs. ({0,200} in case they
-  # specified a number larger than our string.)
-  $pattern =~ /^([^Z]Z*){0,$offset}(Z*([^Z]Z*){0,$length})/;
+  my $returnVal = '';
 
-  my $substring = $2;
+  my $count = 0;
+  my $counting = 1;
 
-  # Translate all the Zs to .'s, which will match everything.
-  $substring =~ s/Z/./g;
+  foreach my $char (@chars)
+  {
+    # Stop counting if we see a <
+    if ($char eq '<')
+    {
+      $counting = 0;
+    }
 
-  # Translate all the \ to \\'s, which will match everything.
-  $substring =~ s#\\#\\\\#g;
+    # Start counting when we see a >, but don't count the >
+    if ($char eq '>')
+    {
+      $counting = 1;
+      $count-- unless $count == 0;
+    }
 
-  # Escape all the metacharacters
-  $substring = quotemeta($substring);
+    last if $count > $offset + $length;
 
-  # Now match our munged substring against the real thing, and extract the match
-  my ($returnval) = $html =~ /($substring)/s;
+    $returnVal .= $char if $count >= $offset;
+
+    $count++ if $counting;
+  }
+
+  unless (defined $returnVal)
+  {
+    warn "News Clipper encountered an error taking an HTML stubstring.\n".
+      "Please submit a bug report at http://newsclipper.sourceforge.net/\n";
+    return '';
+  }
 
   # But wait! What if we chopped off a starting <font>, <tt> etc from the
   # beginning, or an ending </font>, </tt>, etc from the end?
-  $returnval = TrimOpenTags($returnval);
+  $returnVal = TrimOpenTags($returnVal);
 
-  return $returnval;
+  return bless (\$returnVal,$returnRef) if $returnRef;
+  return $returnVal;
 }
 
 # ------------------------------------------------------------------------------
 
 # Escapes & < and > in text. Note that this should only be used on non-HTML
-# text. ('&lt;' gets turned into '&amp;lt;')
-sub EscapeHTMLChars
+# text. ('AT&T' gets turned into 'AT&amp;T') Takes one long string (or a
+# reference to one) and returns the same.
+
+sub EscapeHTMLChars($)
 {
-  my $html = shift @_;
+  my $html = shift;
 
-  my $type = ref $html || 'String';
+  return undef unless defined $html;
 
-  if ($type ne 'String')
+  unless (UNIVERSAL::isa(\$html,'SCALAR') || UNIVERSAL::isa($html,'SCALAR'))
   {
-    die <<"    EOF";
-      You've tried to call StripAttributes with a value of type "$type", but
-      it only takes values of type "String".
+    die reformat dequote<<"    EOF";
+      EscapeHTMLChars only takes values of type "SCALAR".
     EOF
+  }
+
+  my $returnRef = 0;
+
+  if (ref $html)
+  {
+    $returnRef = ref $html;
+    $html = $$html;
   }
 
   # Escape HTML characters
@@ -287,6 +354,7 @@ sub EscapeHTMLChars
   $html =~ s/</&lt;/sg;
   $html =~ s/>/&gt;/sg;
 
+  return bless (\$html,$returnRef) if $returnRef;
   return $html;
 }
 
@@ -296,20 +364,29 @@ sub EscapeHTMLChars
 # should probably be doing this with HTML::Parser. Note that this function
 # erroneously recognizes stuff like <a href='XXX">. This is pretty rare, and
 # doing it this way is faster than recognizing two quotes and no quotes
-# separately.
-sub MakeLinksAbsolute
+# separately. Takes one long string (or a reference to one) and returns the
+# same.
+
+sub MakeLinksAbsolute($$)
 {
   my $url = shift;
   my $html = shift;
 
-  my $type = ref $html || 'String';
+  return undef unless defined $html;
 
-  if ($type ne 'String')
+  unless (UNIVERSAL::isa(\$html,'SCALAR') || UNIVERSAL::isa($html,'SCALAR'))
   {
-    die <<"    EOF";
-      You've tried to call StripAttributes with a value of type "$type", but
-      it only takes values of type "String".
+    die reformat dequote<<"    EOF";
+      MakeLinksAbsolute only takes values of type "SCALAR".
     EOF
+  }
+
+  my $returnRef = 0;
+
+  if (ref $html)
+  {
+    $returnRef = ref $html;
+    $html = $$html;
   }
 
   $html =~ s/
@@ -328,7 +405,52 @@ sub MakeLinksAbsolute
       $1.sprintf("%s",URI->new($2)->abs($url)).$3
     /segix;
 
+  return bless (\$html,$returnRef) if $returnRef;
   return $html;
+}
+
+# ------------------------------------------------------------------------------
+
+# Searches HTML for a tag and an attribute, and returns the value of the
+# attribute for the first tag encountered. Returns undef if the value can't be
+# found.
+
+sub GetAttributeValue($$$)
+{
+  my $html = shift;
+  my $tag = shift;
+  my $attribute = shift;
+
+  return undef unless defined $html;
+
+  unless (UNIVERSAL::isa(\$html,'SCALAR') || UNIVERSAL::isa($html,'SCALAR'))
+  {
+    die reformat dequote<<"    EOF";
+      GetAttributeValue only takes values of type "SCALAR".
+    EOF
+  }
+
+  $html = $$html if ref $html;
+
+  if ($html =~ /
+      # First look for a <$tag, followed later by an $attribute
+      <\s*(?:$tag)\b[^>]*\b(?:$attribute)\b\s*=\s*
+      # Then an optional quote
+      ['"]?
+      # Then the interesting part
+      ([^'"> ]+)
+      # Then another optional quote
+      ['"]?
+      # And the left-overs
+      [^>]*>
+    /six)
+  {
+    return $1;
+  }
+  else
+  {
+    return undef;
+  }
 }
 
 1;

@@ -1,13 +1,5 @@
-News Clipper version 1.17
-http://www.newsclipper.com/
-
-Written by:
-David Coppit (david@coppit.org http://coppit.org/)
-Spinnaker Software (http://www.spinnakersoft.com/)
-
-Distributed by:
-Binary Research International (http://www.binaryresearch.net/)
-
+News Clipper Version 1.23, Open Source
+http://newsclipper.sourceforge.net/
 
 News Clipper is an information integrator. It creates a custom web page from a
 template HTML file with special tags, replacing those tags with dynamic
@@ -17,30 +9,56 @@ This is the Open Source version of News Clipper.  You either got this in
 conjunction with a purchase of a commercial version, or in source-only form.
 If you got it the latter way, you can buy the commercial version which will
 get you: technical support, a nice user's manual, pre-compiled binaries, and
-free upgrades for a year.
+free upgrades for a year. Visit http://www.newsclipper.com/ for more
+information.
 
-Please send me any modifications you make to the main script. (for the better,
-that is. :) Keep in mind that I'm likely to turn down obscure features to
-avoid including everything but the kitchen sink. Check out the TODO file for
-ways you can help, and DESIGN for a quick description of the major modules.
-A major contribution will get you a free license for the commercial version.
+New since version 1.20:
+- Added FTP code which somehow didn't get into version 1.20.
+- Added a check to make sure that an incompatible handler will not be loaded
+  and used.
+- Fixed a bug in error message reporting
+- Expanded the arguments to the handler subroutines ProcessAttributes,
+  FilterType, OutputType, GetUpdateTimes, and GetDefaultHandlers, providing
+  attribute information and data. [This should be backwards compatible with
+  existing handlers which do not expect or use the new data.]
+- Added "forNewsClipperVersion" attribute to NewsClipper.cfg
+- Updated ConvertHandler and ConvertConfig to detect the version of the
+  handler or NewsClipper.cfg, and only apply the changes that are necessary to
+  bring it up to the current version.
+- Fixed a bug where a newly downloaded update to a handler would not be used
+  until the next execution of News Clipper.
+- Added use of socketTries through more of the code (not just when fetching
+  remote data).
+- Added support for type names containing spaces.
+- Fixed MakeHandler.pl so that it doesn't insert comment characters ("#") into
+  the syntax information. (bugfix)
 
-See the file CHANGES for a list of changes since the last version.
+
+See the file CHANGES for a complete change history.
+
+
+DEVELOPMENT
+
+The News Clipper development website is hosted by SourceForge at
+http://newsclipper.sourceforge.net/ There are design documents there
+describing how News Clipper works, as well as planned enhancements, known
+bugs, etc.
 
 
 SUPPORT & DOCUMENTATION
 
-You can join the News Clipper mailing list at
-http://www.newsclipper.com/techsup.htm, where you will also find a FAQ. This
-list is archived at
-http://www.mail-archive.com/newsclipperlist%40newsclipper.com.
+Support for News Clipper Open Source is provided through the News Clipper User
+and News Clipper Developer mailing lists. Instructions for joining are at
+http://newsclipper.sourceforge.net/
 
-'perldoc NewsClipper.pl' will give you an overview of the software.
-The file userman.html in this distribution provides an (outdated) overview of
-the command syntax. 
+'perldoc NewsClipper.pl' will give you an overview of the software. A complete
+user's manual is available with the purchase of the commercial version (see
+below).
 
 Also try running with the -d switch if you have problems, or see the FAQ at
 http://www.newsclipper.com/techsup.htm.
+
+Report bugs to bugreport@newsclipper.com
 
 
 PREREQUISITES
@@ -55,6 +73,7 @@ PREREQUISITES
     URI
     HTML::Parser
     HTML::Tree
+    File::Cache
     libwww
   Be advised that these modules also require other modules:
     URI requires MIME::Base64
@@ -67,21 +86,38 @@ PREREQUISITES
   install these modules. Run "ppm", then type "install MODULE" for each
   module, in the following order: MIME-Base64, libnet, Font-AFM,
   Digest-MD5, URI, HTML-Parser, libwww-perl, TimeDate, Time-modules, HTML-Tree,
-  libwin32
+  libwin32, Storable. There isn't a ppm version of the File::Cache
+  distribution yet. You'll have to install it manually from the URL below.
 
   Non-Windows users should download and install the modules from the following
   URLs, in order:
-  http://www.perl.com/CPAN/modules/by-module/MIME/MIME-Base64-2.11.tar.gz
-  http://www.perl.com/CPAN/modules/by-module/Net/libnet-1.0606.tar.gz
-  http://www.perl.com/CPAN/modules/by-module/Font/Font-AFM-1.18.tar.gz
-  http://www.perl.com/CPAN/modules/by-module/MD5/Digest-MD5-2.09.tar.gz
-  http://www.perl.com/CPAN/modules/by-module/URI/URI-1.04.tar.gz
-  http://www.perl.com/CPAN/modules/by-module/HTML/HTML-Parser-2.23.tar.gz
-  http://www.perl.com/CPAN/modules/by-module/LWP/libwww-perl-5.44.tar.gz
-  http://www.perl.com/CPAN/modules/by-module/Time/TimeDate-1.08.tar.gz
-  http://www.perl.com/CPAN/modules/by-module/Time/Time-modules-99.062301.tar.gz
-  http://www.perl.com/CPAN/modules/by-module/HTML/HTML-Tree-0.51.tar.gz
-  http://www.perl.com/CPAN/modules/by-module/IO/IO-1.20.tar.gz
+
+  MIME-Base64-X.XX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/MIME/
+  libnet-X.XXXX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/Net/
+  Font-AFM-X.XX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/Font/
+  Digest-MD5-X.XX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/MD5/
+  URI-X.XX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/URI/
+  HTML-Parser-X.XX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/HTML/
+  libwww-perl-X.XX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/LWP/
+  TimeDate-X.XX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/Time/
+  Time-modules-XX.XXXXXX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/Time/
+  HTML-Tree-X.XX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/HTML/
+  IO-X.XX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/IO/
+  Storable-X.X.XX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/Storable/
+  File-Cache-X.XX.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/File/
 
 
 INSTALLATION
@@ -96,7 +132,7 @@ INSTALLATION
   the News Clipper root directory, and the manual pages. You can create a
   symbolic link from the binaries in the bin subdirectory to your ~/bin
   directory, or augment your PATH environment variable to include the bin
-  subdirectory.  Likewise, you can specify an man page installation path that
+  subdirectory.  Likewise, you can specify a man page installation path that
   is already in your MANPATH environment variable, or augment your MANPATH
   environment variable.
 
@@ -123,6 +159,20 @@ INSTALLATION
   This error does not appear to be significant.
 
 
+UPGRADING FROM A PREVIOUS VERSION
+
+- In this distribution you will find a program called "ConvertHandler", which
+  will update any handlers you may have written for a previous version of News
+  Clipper. You should delete handlers you did not write from your handlers
+  directory -- new versions will be automatically be downloaded from the News
+  Clipper handler server.
+- During installation, Makefile.PL will attempt to find any existing
+  NewsClipper.cfg file you have and convert it to the current version using
+  the "ConvertConfig" application that comes with the distribution.
+- Run "ConvertConfig NewsClipper.cfg" from the command prompt to update any
+  other NewsClipper.cfg files you have.
+
+
 CONFIGURING
 
 - On Windows systems, the location of the configuration file is stored in the
@@ -140,12 +190,8 @@ CONFIGURING
     );
 - Each line in the News Clipper configuration file (NewsClipper.cfg) that
   begins with a '#' is a comment that describes the option following it.
-- When you register News Clipper, replace YOUR_EMAIL_HERE with your email,
-  exactly as you gave it during the registration process. Replace
-  YOUR_REG_KEY_HERE with the registration key you are given.
-- If you use a proxy for accessing the web, enter the proxy's URL for the
-  "proxy" option, and set the user name and password if you desire.
-- The remaining options should not need modification.
+- See "perldoc NewsClipper.pl" for a description of the configuration
+  parameters.
 
 
 TESTING
@@ -161,10 +207,9 @@ TESTING
 This will cause News Clipper to process the input file specified in the
 NewsClipper.cfg file. (When you first install News Clipper, this will be a
 file located in the SampleFiles directory.) The first time you run News
-Clipper, there will be a series of prompts that ask you whether or not News
-Clipper can download the handlers it needs. There is also some delay in
-contacting the handler server and the content provider. Please be patient.
-Subsequent executions will be faster.
+Clipper, News Clipper will download the handlers it needs. There is also some
+delay in contacting the handler server and the content provider. Please be
+patient.  Subsequent executions will be faster.
 
 The default installation processes a sample input file found in the
 "INSTALLDIR\SampleFiles" directory.  You can view the output file (located in
@@ -185,7 +230,7 @@ To see how News Clipper might add value to your web site, do the following:
   <!--newsclipper
     <input name=yahootopstories source=ap>
     <filter name=map filter=hash2string
-             format='<a href="%{url}">%{headline}</a>'>>
+             format='<a href="%{url}">%{headline}</a>'>
     <filter name=limit number=10>
     <output name=array numcols=1>
   -->
@@ -193,7 +238,7 @@ To see how News Clipper might add value to your web site, do the following:
   <!--newsclipper
     <input name=yahootopstories source=reuters>
     <filter name=map filter=hash2string
-             format='<a href="%{url}">%{headline}</a>'>>
+             format='<a href="%{url}">%{headline}</a>'>
     <filter name=limit number=10>
     <output name=array numcols=2>
   -->
@@ -201,7 +246,7 @@ To see how News Clipper might add value to your web site, do the following:
   <!--newsclipper
     <input name=yahootopstories source=sports>
     <filter name=map filter=hash2string
-             format='%{url}: %{headline}'>>
+             format='%{url}: %{headline}'>
     <filter name=limit number=10>
     <output name=array numcols=1>
   -->
@@ -209,7 +254,7 @@ To see how News Clipper might add value to your web site, do the following:
   <!--newsclipper
     <input name=yahootopstories source=ap>
     <filter name=map filter=hash2string
-             format='<a href="%{url}">%{headline}</a>'>>
+             format='<a href="%{url}">%{headline}</a>'>
     <filter name=limit number=10>
     <output name=array numcols=1 prefix='--&gt;' suffix='<br>'>
   -->
@@ -220,12 +265,23 @@ To see how News Clipper might add value to your web site, do the following:
 
 AVAILABILITY
 
-The latest version is always available at http://www.newsclipper.com/.
+The latest open source version is always available at
+http://newsclipper.sourceforge.net/.
+
+
+PRIMARY AUTHOR
+David Coppit (david@coppit.org http://coppit.org/)
+Spinnaker Software (http://www.spinnakersoft.com/)
+
+
+COMMERCIAL DISTRIBUTOR
+Binary Research International (http://www.binaryresearch.net/)
 
 
 COPYRIGHT & LICENSE
 
-Copyright 1997,1998,1999 David Coppit (david@coppit.org, http://coppit.org/)
+Copyright 1997,1998,1999,2000 David Coppit (david@coppit.org,
+http://coppit.org/)
 
 This code is distributed under the GNU General Public License (GPL). See
 html://www.opensource.org/gpl-license.html and http://www.opensource.org/.
