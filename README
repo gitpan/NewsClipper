@@ -1,4 +1,4 @@
-News Clipper Version 1.23, Open Source
+News Clipper Version 1.24, Open Source
 http://newsclipper.sourceforge.net/
 
 News Clipper is an information integrator. It creates a custom web page from a
@@ -12,27 +12,20 @@ get you: technical support, a nice user's manual, pre-compiled binaries, and
 free upgrades for a year. Visit http://www.newsclipper.com/ for more
 information.
 
-New since version 1.20:
-- Added FTP code which somehow didn't get into version 1.20.
-- Added a check to make sure that an incompatible handler will not be loaded
-  and used.
-- Fixed a bug in error message reporting
-- Expanded the arguments to the handler subroutines ProcessAttributes,
-  FilterType, OutputType, GetUpdateTimes, and GetDefaultHandlers, providing
-  attribute information and data. [This should be backwards compatible with
-  existing handlers which do not expect or use the new data.]
-- Added "forNewsClipperVersion" attribute to NewsClipper.cfg
-- Updated ConvertHandler and ConvertConfig to detect the version of the
-  handler or NewsClipper.cfg, and only apply the changes that are necessary to
-  bring it up to the current version.
-- Fixed a bug where a newly downloaded update to a handler would not be used
-  until the next execution of News Clipper.
-- Added use of socketTries through more of the code (not just when fetching
-  remote data).
-- Added support for type names containing spaces.
-- Fixed MakeHandler.pl so that it doesn't insert comment characters ("#") into
-  the syntax information. (bugfix)
-
+New in version 1.24:
+- Added a lockfile (~/.NewsClipper/lock) that prevents more than one copy of
+  News Clipper from running at the same time.
+- Faster verification of handler type during counting of number of installed
+  acquisition handlers (affects commercial versions only)
+- Decreased dependence on handler server during couting of number of installed
+  acquisition handlers (affects commercial versions only)
+- Installation no longer requires "make NewsClipper_Cleanup" step
+- Installation now automatically converts older configuration files.
+- Added ExtractTables function to HTMLTools. (Thanks to Chris Pimlott
+  for the initial implementation and idea.)
+- Non-fatal errors while contacting the handler server are now printed in the
+  output as HTML comments.
+- A few speed improvements.
 
 See the file CHANGES for a complete change history.
 
@@ -75,6 +68,7 @@ PREREQUISITES
     HTML::Tree
     File::Cache
     libwww
+    LockFile::Simple
   Be advised that these modules also require other modules:
     URI requires MIME::Base64
     HTML::Tree requires libwww and Font::AFM
@@ -118,10 +112,14 @@ PREREQUISITES
     http://www.perl.com/CPAN/modules/by-module/Storable/
   File-Cache-X.XX.tar.gz =>
     http://www.perl.com/CPAN/modules/by-module/File/
+  LockFile-Simple-X.X.X.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/LockFile/
 
 
 INSTALLATION
 
+[Note that these instructions have worked for Windows in the past, but they
+have not been verified recently. Your mileage may vary.]
 - run "perl Makefile.PL"
 - On Unix-like systems, you have the option of installing News Clipper as a
   single user, or system-wide. Install as a single user if you do not have
@@ -152,11 +150,6 @@ INSTALLATION
   "CST"
 - run "make" or "nmake"
 - run "make install" or "nmake install"
-- run "make NewsClipper_Cleanup" or "nmake NewsClipper_Cleanup"
-  There is a bug in some versions of Perl for Windows that causes the
-  following error to appear during installation:
-    Can't modify blib\script\MakeHandler.pl at (eval 2) line 51, <FIXIN> chunk 1
-  This error does not appear to be significant.
 
 
 UPGRADING FROM A PREVIOUS VERSION

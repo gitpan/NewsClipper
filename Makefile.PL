@@ -91,8 +91,6 @@ sub Setup_Install
     ($newsclipper_cfg_path,$install_type,$install_dir,$install_man_dir) =
       Setup_Install_Unix();
     $timezone = undef;
-
-    Copy_Binaries() if -e 'bin';
   }
 
   unless (defined $install_type && $install_type eq 'system')
@@ -113,94 +111,6 @@ EOF
 }
 
 # --------------------------------------------------------------------------
-
-sub Copy_Binaries
-{
-  # Copy binary based on the architecture
-
-  my $extension;
-
-  if ($^O eq 'solaris')
-  {
-    $extension = 'sun';
-  }
-  elsif ($^O eq 'irix')
-  {
-    $extension = 'IRIX';
-  }
-  elsif ($^O eq 'freebsd')
-  {
-    $extension = 'FreeBSD';
-  }
-  elsif ($^O eq 'bsdos')
-  {
-    $extension = 'BSDOS';
-  }
-  # need to detect libc6
-  elsif ($^O eq 'linux')
-  {
-  #  if (-e '/lib/libc.so.6')
-  #  {
-      $extension = 'linux.libc6';
-  #  }
-  #  elsif (-e '/lib/libc.so.5')
-  #  {
-  #    $extension = 'linux.libc5';
-  #  }
-  #  else
-  #  {
-  #    REDO:
-  #    print <<EOF;
-  #I couldn't determine your libc version. Pick one:
-  #1) libc5
-  #2) libc6
-  #EOF
-  #    print "=> ";
-  #    my $choice = <STDIN>;
-  #    chomp $choice;
-  #    goto REDO unless $choice eq '1' or $choice eq '2';
-  #
-  #    if ($choice eq '1');
-  #    {
-  #      $linux_type = 'libc5';
-  #    }
-  #    else
-  #    {
-  #      $linux_type = 'libc6';
-  #    }
-  #  }
-  }
-  else
-  {
-    die <<"    EOF";
-ERROR: you are trying to install the News Clipper binary version on an
-architecture that is currently not supported. The supported architectures are
-IRIX, BSD/OS, FreeBSD, Linux (libc6) and Solaris.
-
-If you need News Clipper on one of the following platforms, please send email
-to coppit\@spinnakersoft.com asking for your platform to be supported:
-
-Linux libc5
-HP/UX
-AIX
-Linux on mips
-OpenBSD
-DEC OSF1
-
-Alternatively, you can try to install the "Perl version" of News Clipper.
-However, be advised that it requires several Perl modules that are probably
-not installed on your system. You need to be able to install those modules.
-Visit http://www.newsclipper.com/ for more information.
-    EOF
-  }
-
-  foreach my $program (@programs)
-  {
-    system "cp bin/$program.$extension $program";
-  }
-}
-
-# ----------------------------------------------------------------------------
 
 sub Setup_Install_Windows
 {
@@ -449,6 +359,8 @@ sub Compute_Makefile_Attributes
   # Unix version has binaries
   if (-d 'bin')
   {
+    @programs = grep { s/^/bin\// } @programs;
+
     %makefile_attributes = (
       'NAME'  => 'NewsClipper',
       'VERSION' => $VERSION,
@@ -517,6 +429,19 @@ sub Compute_Makefile_Attributes
 
 # Uses globals: $install_type, $newsclipper_cfg_path, $^O
 
+sub MY::install
+{
+  # Return nothing if we are building a makefile for building the .tar.gz
+  # distribution
+  return ''
+    if ($ARGV[0] eq "opensource" || $ARGV[0] eq "unix" || $ARGV[0] eq "perl");
+
+  package MY; # so that "SUPER" works right
+  my $inherited = shift->SUPER::install(@_);
+  $inherited =~ s/(install :: .*)$/$1 NewsClipper_Cleanup/m;
+  return $inherited;
+}
+
 sub MY::postamble
 {
   my $returnText = "NewsClipper_Cleanup:\n";
@@ -528,18 +453,38 @@ sub MY::postamble
 
   my $cfg_file = "$newsclipper_cfg_path/NewsClipper.cfg";
 
+    $returnText .=<<"    EOF";
+	\@echo '  -------------------------------------------------------------'; \\
+	echo 'DOING FINAL NEWS CLIPPER CONFIGURATION CHANGES'; \\
+    EOF
+
+  my $convert_config = 'ConvertConfig';
+
+  # Unix version has binaries
+  $convert_config .= '.pl' unless -d 'bin';
+
+  # Look for an old NewsClipper.cfg in ~/.NewsClipper
+  my $home = Get_Home_Directory();
+  if (-e "$home/.NewsClipper/NewsClipper.cfg")
+  {
+    $returnText .=<<"    EOF";
+	echo '  Updating $home/.NewsClipper/NewsClipper.cfg ...'; \\
+	\$(INSTALLSCRIPT)/$convert_config "$home/.NewsClipper/NewsClipper.cfg"; \\
+    EOF
+  }
+
   # If the NewsClipper.cfg exists, we need to update it instead of copying it.
   if (-e $cfg_file)
   {
     $returnText .=<<"    EOF";
-	\@echo '  Updating $cfg_file ...'; \\
-	\$(INSTALLSCRIPT)/ConvertConfig "$cfg_file"; \\
+	echo '  Updating $cfg_file ...'; \\
+	\$(INSTALLSCRIPT)/$convert_config "$cfg_file"; \\
     EOF
   }
   else
   {
     $returnText .=<<"    EOF";
-	\@echo '  Copying NewsClipper.cfg to $newsclipper_cfg_path ...'; \\
+	echo '  Copying NewsClipper.cfg to $newsclipper_cfg_path ...'; \\
 	perl -MExtUtils::Command -e mkpath "$newsclipper_cfg_path"; \\
 	perl -MExtUtils::Command -e cp NewsClipper.cfg "$newsclipper_cfg_path"; \\
     EOF
@@ -556,10 +501,19 @@ sub MY::postamble
       || (-d 'bin'))
   {
     $returnText .=<<"    EOF";
-	echo '  Setting modulepath in NewsClipper.cfg...'; \\
+	echo '  Setting modulepath in $cfg_file...'; \\
 	perl -ibak -pe "s|'modulepath' => '.*'|'modulepath' => '\$(INSTALLPRIVLIB)'|" "$cfg_file"; \\
-	perl -MExtUtils::Command -e "rm('${cfg_file}bak')"; \\
+	perl -MExtUtils::Command -e "rm_f('${cfg_file}bak')"; \\
     EOF
+
+    if (-e "$home/.NewsClipper/NewsClipper.cfg")
+    {
+      $returnText .=<<"      EOF";
+	echo '  Setting modulepath in $home/.NewsClipper/NewsClipper.cfg...'; \\
+	perl -ibak -pe "s|'modulepath' => '.*'|'modulepath' => '\$(INSTALLPRIVLIB)'|" "$home/.NewsClipper/NewsClipper.cfg"; \\
+	perl -MExtUtils::Command -e "rm_f('$home/.NewsClipper/NewsClipper.cfgbak')"; \\
+      EOF
+    }
   }
 
   return $returnText;

@@ -15,7 +15,7 @@ use File::Find;
 
 use vars qw( $VERSION );
 
-$VERSION = 0.83;
+$VERSION = 0.86;
 
 use NewsClipper::Globals;
 
@@ -27,10 +27,12 @@ my $HANDLER_SERVER = 'handlers.newsclipper.com';
 #my $HANDLER_SERVER = '192.168.0.1';
 my $COMPATIBLE_NEWS_CLIPPER_VERSION = 1.18;
 
-# Used to avoid unnecessary processing of handlers
+# Caches used to avoid unnecessary processing of handlers
 my @updatedHandlers;
 my @allowedHandlers;
 my @compatibleHandlers;
+my %handler_type;
+my %downloadedCode;
 
 # ------------------------------------------------------------------------------
 
@@ -53,131 +55,189 @@ sub new
 
 # ------------------------------------------------------------------------------
 
-# Finds and creates a handler object for the given name. Be careful here that
-# you don't actually load the handler until you are sure that it is compatible
-# with this version of News Clipper.
+# Finds and creates a handler object for the given name. Downloads a new
+# handler from the server if the handler is not installed on the system, or if
+# an update is needed. Returns undef if the handler can not be loaded and
+# created.
 
 sub Create
 {
   my $self = shift;
-  my $handlerName = shift;
+  my $handler_name = shift;
 
   croak "You must supply a handler name to HandlerFactory\n"
-    unless defined $handlerName;
+    unless defined $handler_name;
 
-  $handlerName = lc($handlerName);
+  $handler_name = lc($handler_name);
 
-  _CheckRegistrationRestriction($handlerName);
+  # First see if the handler is okay to use given the trial/personal
+  # restrictions.
+  _CheckRegistrationRestriction($handler_name);
 
+  # Check that the handler version is compatible
   {
     my $handler_version_compatibility_result = 
-      _HandlerVersionIsCompatible($handlerName);
-    return undef if defined $handler_version_compatibility_result &&
-      $handler_version_compatibility_result == 0;
+      _HandlerVersionIsCompatible($handler_name);
+
+    if (defined $handler_version_compatibility_result &&
+      $handler_version_compatibility_result == 0)
+    {
+      return undef;
+    }
   }
 
   # Download the handler if we need to, either because ours is
   # out of date, or because we don't have it installed.
-  my $update_result = _DoHandlerUpdate($handlerName);
+  my $update_result = _DoHandlerUpdate($handler_name);
 
   my $loadResult;
 
-  # Be sure to "unload" the handler by deleting it from %INC
-  if ($update_result eq 'updated')
-  {
-    # Try to reload the handler
-    $loadResult = _LoadHandler($handlerName,1);
-  }
-  else
-  {
-    # Try to load the handler
-    $loadResult = _LoadHandler($handlerName,0);
-  }
+  # Try to load the handler
+  $loadResult = _LoadHandler($handler_name);
 
-  if ($loadResult =~ /^Found/)
+  if ($loadResult =~ /^found/)
   {
-    dprint "Creating handler \"$handlerName\"";
-    my ($fullHandler) = $loadResult =~ /Found as (.*)/;
+    dprint "Creating handler \"$handler_name\"";
+    my ($fullHandler) = $loadResult =~ /found as (.*)/;
     return "$fullHandler"->new;
   }
-  elsif ($loadResult eq 'Not found')
+  elsif ($loadResult eq 'not found')
   {
-    warn "Can not find handler \"$handlerName\", and can not download it.\n";
     return undef;
   }
 }
 
 # ------------------------------------------------------------------------------
 
-# Updates from the remote the handler if necessary. Returns 'updated' if the
-# handler was updated, and 'not updated' otherwise. Updates are necessary if:
-# the handler isn't anywhere on the system
-# auto_download_bugfix_updates is 'yes' and there is a bugfix version
-# -n was specified and a functional or bugfix version is available.
+# Downloads or updates from the remote the handler if necessary. Returns
+# 'updated' if the handler was updated, 'not updated' if it wasn't, and
+# 'failed' if something when wrong. Updates are necessary if:
+# * the handler isn't anywhere on the system
+# * auto_download_bugfix_updates is 'yes' and there is a bugfix version
+# * -n was specified and a functional or bugfix version is available.
 
 sub _DoHandlerUpdate
 {
-  my $handlerName = shift;
+  my $handler_name = shift;
 
-  dprint "Checking if handler \"$handlerName\" needs to be updated.";
+  dprint "Checking if handler \"$handler_name\" needs to be updated.";
 
   # Skip this handler if we've already processed it.
-  if (grep { /^$handlerName$/i } @updatedHandlers)
+  if (grep { /^$handler_name$/i } @updatedHandlers)
   {
-    dprint "Skipping already checked handler \"$handlerName\".";
+    dprint "Skipping already checked handler \"$handler_name\".";
     return 'not updated';
   }
 
-  push @updatedHandlers,$handlerName;
+  push @updatedHandlers,$handler_name;
 
   # First check if the handler isn't on the system.
-  if (_LoadHandler($handlerName,0) eq 'Not found')
+  if (_LoadHandler($handler_name) eq 'not found')
   {
-    dprint "Handler isn't installed, " .
-      "so we need to download a functional update.";
+    dprint "Handler isn't installed, so we need to download it.";
 
     my ($versionStatus,$newVersion,$updateType) =
-      _GetNewHandlerVersion($handlerName,0);
+      _GetNewHandlerVersion($handler_name,'functional');
 
-    if ($versionStatus eq 'okay')
+    if ($versionStatus eq 'not found')
     {
-      dprint "There is a remote handler available.";
+      warn reformat dequote <<"      EOF";
+        The handler server reports that the handler $handler_name is not in
+        the database.
+      EOF
+      return 'failed';
     }
-    elsif ($versionStatus eq 'not found' || $versionStatus eq 'no update')
+
+    if ($versionStatus eq 'no update')
+    {
+      die "News Clipper encountered a \"no update\" when there is no local " .
+        "version of handler $handler_name";
+    }
+
+    if ($versionStatus eq 'failed')
+    {
+      warn reformat dequote <<"      EOF";
+        Couldn't determine which version of the handler $handler_name to
+        download because the server is down. Try again in a while, and send
+        email to bugreport\@newsclipper.com if the problem persists.
+      EOF
+      return 'failed';
+    }
+    elsif ($versionStatus ne 'okay')
+    {
+      die "News Clipper encountered an unknown \$versionStatus";
+    }
+
+    dprint "There is a remote handler available.";
+
+    my $download_result = _DownloadHandler($handler_name,$newVersion);
+    return 'updated' if $download_result eq 'okay';
+
+    if ($download_result eq 'not found')
+    {
+      warn reformat dequote <<"      EOF";
+        Couldn't install the handler $handler_name. The handler server reports
+        that the handler is not in the database.
+      EOF
+      return 'failed';
+    }
+    elsif ($download_result =~ /failed: (.*)/s)
+    {
+      warn reformat dequote $1;
+      return 'failed';
+    }
+  }
+  # The handler is on the system, so do an update if we need to.
+  else
+  {
+    my $update_status;
+
+    $update_status = _DoHandlerFunctionalUpdate($handler_name);
+
+    if ($update_status eq 'updated')
+    {
+      _UnLoadHandler($handler_name);
+      return 'updated';
+    }
+    elsif ($update_status eq 'failed')
+    {
+      return 'failed';
+    }
+    elsif ($update_status ne 'not updated')
+    {
+      die "News Clipper encountered an unknown \$update_status";
+    }
+
+    $update_status = _DoHandlerBugfixUpdate($handler_name);
+
+    if ($update_status eq 'updated')
+    {
+      _UnLoadHandler($handler_name);
+      return 'updated';
+    }
+    elsif ($update_status eq 'not updated')
     {
       return 'not updated';
     }
-    # failed, so we check next time too instead of waiting
+    elsif ($update_status eq 'failed')
+    {
+      return 'failed';
+    }
     else
     {
-      dprint "News Clipper could not get version information for handler " .
-        "$handlerName. Maybe the server is down.";
-      return 'not updated';
+      die "News Clipper encountered an unknown \$update_status";
     }
-
-    my $download_result = _DownloadHandler($handlerName,$newVersion);
-
-    return 'updated' if $download_result eq 'okay';
-    return 'not updated' if $download_result ne 'okay';
   }
-
-  my $update_status;
-
-  $update_status = _DoHandlerFunctionalUpdate($handlerName);
-  return 'updated' if $update_status eq 'updated';
-
-  $update_status = _DoHandlerBugfixUpdate($handlerName);
-  return $update_status;
 }
 
 # ------------------------------------------------------------------------------
 
-# Checks for and does a functional update for a handler. Returns 'updated' or
-# 'not updated'.
+# Checks for and does a functional update for a handler. Returns 'updated',
+# 'not updated', or 'failed'. Handles any error messages to the user.
 
 sub _DoHandlerFunctionalUpdate
 {
-  my $handlerName = shift;
+  my $handler_name = shift;
 
   # Functional updates are only prompted by -n
   unless ($opts{n})
@@ -189,7 +249,7 @@ sub _DoHandlerFunctionalUpdate
   # Check if we've already done a functional check in the last time period
   {
     my $lastCheck =
-      $NewsClipper::Globals::state->get("last_functional_check_$handlerName");
+      $NewsClipper::Globals::state->get("last_functional_check_$handler_name");
 
     if (defined $lastCheck &&
              (time - $lastCheck < $TIME_BETWEEN_FUNCTIONAL_UPDATES))
@@ -201,38 +261,56 @@ sub _DoHandlerFunctionalUpdate
 
   # Now do the check
   my ($versionStatus,$newVersion,$updateType) =
-    _GetNewHandlerVersion($handlerName,0);
+    _GetNewHandlerVersion($handler_name,'functional');
 
-  if ($versionStatus eq 'okay')
+  if ($versionStatus eq 'not found')
   {
-    dprint "There is a new " . $updateType . " version.";
-    $NewsClipper::Globals::state->set("last_functional_check_$handlerName",time);
-    $NewsClipper::Globals::state->set("last_bugfix_check_$handlerName",time);
+    dprint reformat (65,dequote <<"    EOF");
+      Can't do functional update of handler $handler_name.
+      Handler server reports that handler $handler_name is not in the database.
+    EOF
+    $NewsClipper::Globals::state->set("last_functional_check_$handler_name",time);
+    $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
+    return 'not updated';
   }
-  elsif ($versionStatus eq 'not found' || $versionStatus eq 'no update')
+  elsif ($versionStatus eq 'no update')
   {
-    $NewsClipper::Globals::state->set("last_functional_check_$handlerName",time);
-    $NewsClipper::Globals::state->set("last_bugfix_check_$handlerName",time);
+    dprint "There is a no new functional or bugfix update version.";
+    $NewsClipper::Globals::state->set("last_functional_check_$handler_name",time);
+    $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
     return 'not updated';
   }
   # failed, so we check next time too instead of waiting
-  else
+  elsif ($versionStatus eq 'failed')
   {
-    return 'not updated';
+    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
+      Couldn't determine if there is a newer functional update version of
+      $handler_name available because the server is down. Try again in a while,
+      and send email to bugreport\@newsclipper.com if the problem persists.
+    EOF
+    return 'failed';
   }
+  elsif ($versionStatus ne 'okay')
+  {
+    die "News Clipper encountered an unknown \$versionStatus";
+  }
+
+  dprint "There is a new " . $updateType . " version.";
+  $NewsClipper::Globals::state->set("last_functional_check_$handler_name",time);
+  $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
 
   # Do automatic download if it's a bugfix and auto_download_bugfix_updates is
   # specified, or if -a was specified.
   if ($opts{a} || ($updateType eq 'bugfix' && 
         $main::config{auto_download_bugfix_updates} =~ /^y/i))
   {
-    dprint "Doing automatic download for handler \"$handlerName\"";
+    dprint "Doing automatic download for handler \"$handler_name\"";
   }
   # Prompt the user if run interactively, and the user didn't specify one of
   # the auto download options
   elsif (-t STDIN)
   {
-    warn "There is a newer version of handler \"$handlerName\".\n";
+    warn "There is a newer version of handler \"$handler_name\".\n";
     warn "Would you like News Clipper to attempt to download it? [y/n]\n";
     my $response = <STDIN>;
 
@@ -241,8 +319,8 @@ sub _DoHandlerFunctionalUpdate
   # Otherwise we just warn the user we can't do a download
   elsif ($updateType eq 'bugfix')
   {
-    warn reformat dequote <<"    EOF";
-      A bugfix update to handler "$handlerName" is available, but it can't be
+    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
+      A bugfix update to handler "$handler_name" is available, but it can't be
       downloaded because auto_download_bugfix_updates is not "yes" in your
       configuration file, and since News Clipper can't ask you interactively.
     EOF
@@ -250,8 +328,8 @@ sub _DoHandlerFunctionalUpdate
   }
   elsif ($updateType eq 'functional')
   {
-    warn reformat dequote <<"    EOF";
-      A functional update to handler "$handlerName" is available, but it can't
+    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
+      A functional update to handler "$handler_name" is available, but it can't
       be downloaded because the -a flag was not specified, and since News
       Clipper can't ask you interactively.
     EOF
@@ -262,20 +340,32 @@ sub _DoHandlerFunctionalUpdate
     die "News Clipper encountered an unknown input scenario";
   }
 
-  my $download_result = _DownloadHandler($handlerName,$newVersion);
-
+  my $download_result = _DownloadHandler($handler_name,$newVersion);
   return 'updated' if $download_result eq 'okay';
-  return 'not updated' if $download_result ne 'okay';
+
+  if ($download_result eq 'not found')
+  {
+    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
+      Couldn't do a functional update of the handler $handler_name. The handler
+      server reports that the handler is not in the database.
+    EOF
+    return 'failed';
+  }
+  elsif ($download_result =~ /failed: (.*)/s)
+  {
+    $errors{"handler#$handler_name"} = reformat dequote $1;
+    return 'failed';
+  }
 }
 
 # ------------------------------------------------------------------------------
 
-# Checks for and does a bugfix update for a handler. Returns 'updated' or
-# 'not updated'.
+# Checks for and does a bugfix update for a handler. Returns 'updated',
+# 'not updated', or 'failed'. Handles any error messages to the user.
 
 sub _DoHandlerBugfixUpdate
 {
-  my $handlerName = shift;
+  my $handler_name = shift;
 
   # Bugfix updates are only prompted by -n or auto_download_bugfix_updates
   unless ($opts{n} || $main::config{auto_download_bugfix_updates} =~ /^y/i)
@@ -288,7 +378,7 @@ sub _DoHandlerBugfixUpdate
   # Check if we've already done a bugfix check in the last time period
   {
     my $lastCheck =
-      $NewsClipper::Globals::state->get("last_bugfix_check_$handlerName");
+      $NewsClipper::Globals::state->get("last_bugfix_check_$handler_name");
 
     if (defined $lastCheck &&
              (time - $lastCheck < $TIME_BETWEEN_BUGFIX_UPDATES))
@@ -300,67 +390,86 @@ sub _DoHandlerBugfixUpdate
 
   # Now do the check
   my ($versionStatus,$newVersion,$updateType) =
-    _GetNewHandlerVersion($handlerName,1);
+    _GetNewHandlerVersion($handler_name,'bugfix');
 
-  if ($versionStatus eq 'okay')
+  if ($versionStatus eq 'not found')
   {
-    dprint "There is a new bugfix version.";
-    $NewsClipper::Globals::state->set("last_bugfix_check_$handlerName",time);
-  }
-  elsif ($versionStatus eq 'not found' || $versionStatus eq 'no update')
-  {
-    $NewsClipper::Globals::state->set("last_bugfix_check_$handlerName",time);
+    dprint reformat (65,dequote <<"    EOF");
+      Can't do bugfix update of handler $handler_name.
+      Handler server reports that handler $handler_name is not in the database.
+    EOF
+    $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
     return 'not updated';
   }
-  # failed, so we check next time too instead of waiting
-  else
+  elsif ($versionStatus eq 'no update')
   {
+    dprint "There is a no new bugfix update version.";
+    $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
     return 'not updated';
   }
-
-  # Do automatic download if it's a bugfix and auto_download_bugfix_updates is
-  # specified, or if -a was specified.
-  if ($opts{a} || ($updateType eq 'bugfix' && 
-        $main::config{auto_download_bugfix_updates} =~ /^y/i))
+  elsif ($versionStatus eq 'failed')
   {
-    dprint "Doing automatic download for handler \"$handlerName\"";
+    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
+      Couldn't determine if there is a newer bugfix update version of
+      $handler_name available because the server is down. Try again in a while,
+      and send email to bugreport\@newsclipper.com if the problem persists.
+    EOF
+    return 'failed';
+  }
+  elsif ($versionStatus ne 'okay')
+  {
+    die "News Clipper encountered an unknown \$versionStatus";
+  }
+
+  die "Non-bugfix update type encountered for a bugfix update check"
+    if $updateType ne 'bugfix';
+
+  dprint "There is a new bugfix version.";
+  $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
+
+  # Do automatic download if auto_download_bugfix_updates is specified, or if
+  # -a was specified.
+  if ($opts{a} || $main::config{auto_download_bugfix_updates} =~ /^y/i)
+  {
+    dprint "Doing automatic download for handler \"$handler_name\"";
   }
   # Prompt the user if run interactively, and the user didn't specify one of
   # the auto download options
   elsif (-t STDIN)
   {
-    warn "There is a newer version of handler \"$handlerName\".\n";
+    warn "There is a newer version of handler \"$handler_name\".\n";
     warn "Would you like News Clipper to attempt to download it? [y/n]\n";
     my $response = <STDIN>;
 
     return 'not updated' if $response !~ /^y/i;
   }
   # Otherwise we just warn the user we can't do a download
-  elsif ($updateType eq 'bugfix')
+  else
   {
-    warn reformat dequote <<"    EOF";
-      A bugfix update to handler "$handlerName" is available, but it can't be
+    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
+      A bugfix update to handler "$handler_name" is available, but it can't be
       downloaded because auto_download_bugfix_updates is not "yes" in your
       configuration file, and since News Clipper can't ask you interactively.
     EOF
-  }
-  elsif ($updateType eq 'functional')
-  {
-    warn reformat dequote <<"    EOF";
-      A functional update to handler "$handlerName" is available, but it can't
-      be downloaded because the -a flag was not specified, and since News
-      Clipper can't ask you interactively.
-    EOF
-  }
-  else
-  {
-    die "News Clipper encountered an unknown input scenario";
+    return 'not updated';
   }
 
-  my $download_result = _DownloadHandler($handlerName,$newVersion);
-
+  my $download_result = _DownloadHandler($handler_name,$newVersion);
   return 'updated' if $download_result eq 'okay';
-  return 'not updated' if $download_result ne 'okay';
+
+  if ($download_result eq 'not found')
+  {
+    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
+      Couldn't do a bugfix update of the handler $handler_name. The handler
+      server reports that the handler is not in the database.
+    EOF
+    return 'failed';
+  }
+  elsif ($download_result =~ /failed: (.*)/s)
+  {
+    $errors{"handler#$handler_name"} = reformat dequote $1;
+    return 'failed';
+  }
 }
 
 # ------------------------------------------------------------------------------
@@ -371,14 +480,13 @@ sub _DoHandlerBugfixUpdate
 
 sub _GetLocalHandlerNCVersion($)
 {
-  my $handlerName = shift;
+  my $handler_name = shift;
 
   # Find the handler
-  my $foundDirectory = _GetHandlerPath($handlerName);
-
+  my $foundDirectory = _GetHandlerPath($handler_name);
   return undef unless defined $foundDirectory;
 
-  open LOCALHANDLER, "$foundDirectory/$handlerName.pm";
+  open LOCALHANDLER, "$foundDirectory/$handler_name.pm";
   my $handler_code = join '',<LOCALHANDLER>;
   close LOCALHANDLER;
 
@@ -407,29 +515,21 @@ sub _GetLocalHandlerNCVersion($)
 
 sub _GetLocalHandlerVersion($)
 {
-  my $handlerName = shift;
+  my $handler_name = shift;
 
-  # Load the handler if we need to.
-  my $loadResult = _LoadHandler($handlerName,0);
-
-  if ($loadResult eq 'Not found')
-  {
-    dprint "Handler \"$handlerName\" not found locally.";
-    return undef;
-  }
-
-  my $foundDirectory = _GetHandlerPath($handlerName);
+  my $foundDirectory = _GetHandlerPath($handler_name);
+  return undef unless defined $foundDirectory;
 
   dprint "Found local copy of handler in:\n  $foundDirectory";
 
-  open LOCALHANDLER, "$foundDirectory/$handlerName.pm";
+  open LOCALHANDLER, "$foundDirectory/$handler_name.pm";
   my $localHandler = join '',<LOCALHANDLER>;
   close LOCALHANDLER;
 
-  my ($versionCode) = $localHandler =~ /\$VERSION\s*=\s*(.*?);[ ]*$/m;
+  my ($versionCode) = $localHandler =~ /\$VERSION\s*=\s*do\s*({.*?});/;
   my $localVersion = eval "$versionCode";
 
-  dprint "Local version for handler \"$handlerName\" is: $localVersion";
+  dprint "Local version for handler \"$handler_name\" is: $localVersion";
 
   return $localVersion;
 }
@@ -437,44 +537,41 @@ sub _GetLocalHandlerVersion($)
 # ------------------------------------------------------------------------------
 
 # This routine restricts the personal version to 5 built-in handlers and 5
-# optional ones.
+# optional ones. It dies if the user is trying to use more than their
+# registration allows.
 
 sub _CheckRegistrationRestriction($)
 {
-  my $handlerName = shift;
+  my $handler_name = shift;
 
-  dprint "Checking if handler \"$handlerName\" is okay to use.";
-
-  # Skip this handler if we've already processed it.
-  if (grep { /^$handlerName$/i } @allowedHandlers)
-  {
-    dprint "Skipping already checked handler \"$handlerName\".";
-    return;
-  }
-
-  push @allowedHandlers,$handlerName;
+  dprint "Checking if handler \"$handler_name\" is okay to use.";
 
   return if ($main::config{product} ne 'Personal') &&
             ($main::config{product} ne 'Trial');
 
-  # Non-acquisition handlers are always okay to use.
+  # Skip this handler if we've already processed it.
+  if (grep { /^$handler_name$/i } @allowedHandlers)
   {
-    my @acquisitionHandlers = _GetAcquisitionHandlers();
-    unless (grep {/^$handlerName$/i} @acquisitionHandlers)
-    {
-      dprint "$handlerName isn't an acquisition handler -- okay to use.";
-      return;
-    }
+    dprint "Skipping already checked handler \"$handler_name\".";
+    return;
+  }
+
+  push @allowedHandlers,$handler_name;
+
+  unless (_IsAcquisitionHandler($handler_name))
+  {
+    dprint "$handler_name isn't an acquisition handler -- okay to use.";
+    return;
   }
 
   # Yell if they have the trial version and are doing any acquisition handler
   # other than yahootopstories
   if ($config{product} eq 'Trial')
   {
-    if ($handlerName ne 'yahootopstories')
+    if ($handler_name ne 'yahootopstories')
     {
       die reformat dequote <<"      EOF";
-        You can not use the "$handlerName" handler. The trial version of News
+        You can not use the "$handler_name" handler. The trial version of News
         Clipper only allows you to use the yahootopstories handler.
       EOF
     }
@@ -510,7 +607,6 @@ sub _CheckRegistrationRestriction($)
   {
     local $" = "\n";
     warn reformat dequote <<"    EOF";
-
       You currently have more than the allowed number of handlers on your
       system.  This personal version of News Clipper is only registered to
       used $config{numberhandlers} handlers.
@@ -523,13 +619,13 @@ sub _CheckRegistrationRestriction($)
   # Yell if they have the registered number of handlers on their system, and
   # the current handler isn't one of them.
   if (($#installedHandlers+1 == $config{numberhandlers}) &&
-      (!grep {/$handlerName.pm$/} @installedHandlers))
+      (!grep {/$handler_name.pm$/} @installedHandlers))
   {
     local $" = "\n";
     warn reformat dequote <<"    EOF";
       You currently have $config{numberhandlers} handlers on your
       system, and are trying to use a handler that is not one of these five
-      ($handlerName). This personal version of News Clipper is only registered
+      ($handler_name). This personal version of News Clipper is only registered
       to use $config{numberhandlers} handlers.
 
       Please delete one or more of the following files if you want to be able
@@ -541,41 +637,72 @@ sub _CheckRegistrationRestriction($)
 
 # ------------------------------------------------------------------------------
 
+# Checks to see if a handler is an acquisition handler. First it looks
+# locally, then checks the list of remote acquisition handlers. Dies (in
+# _GetRemoteHandlerType) if the handler is not installed locally and the
+# handler type can not be determined from the server.
+
+sub _IsAcquisitionHandler
+{
+  my $handler_name = shift;
+
+  # First look locally
+  my $loadResult = _LoadHandler($handler_name);
+
+  my $is_acquisition_handler = 0;
+
+  if ($loadResult =~ /(Acquisition|Filter|Output)/s)
+  {
+    $is_acquisition_handler = 1 if $1 eq 'Acquisition';
+  }
+  else
+  {
+    $is_acquisition_handler = 1
+      if _GetRemoteHandlerType($handler_name) eq 'Acquisition';
+  }
+
+  return $is_acquisition_handler;
+}
+
+# ------------------------------------------------------------------------------
+
 # This routine checks that a handler on the system is for the current version
 # of News Clipper. Returns 1 if the handler is compatible, 0 if it is not, and
 # undef if it wasn't found.
 
 sub _HandlerVersionIsCompatible($)
 {
-  my $handlerName = shift;
+  my $handler_name = shift;
 
-  dprint "Checking if handler \"$handlerName\" is okay to use.";
+  dprint "Checking if handler \"$handler_name\" is of a compatible version.";
 
   # Skip this handler if we've already processed it.
-  if (grep { /^$handlerName$/i } @compatibleHandlers)
+  if (grep { /^$handler_name$/i } @compatibleHandlers)
   {
-    dprint "Skipping handler \"$handlerName\" (already checked compatibility.";
+    dprint reformat (65,
+      "Skipping handler \"$handler_name\" (already checked compatibility).");
     return;
   }
 
-  push @compatibleHandlers,$handlerName;
+  push @compatibleHandlers,$handler_name;
 
-  my $local_handler_nc_version = _GetLocalHandlerNCVersion($handlerName);
-
+  my $local_handler_nc_version = _GetLocalHandlerNCVersion($handler_name);
   return undef unless defined $local_handler_nc_version;
 
-  dprint "Handler \"$handlerName\" was written for News Clipper version " .
-    "$local_handler_nc_version, and";
-  dprint "  this version of News Clipper is compatible with version " .
-    "$COMPATIBLE_NEWS_CLIPPER_VERSION.";
+  dprint reformat (65,dequote <<"  EOF");
+    Handler "$handler_name" was written for News Clipper version 
+    $local_handler_nc_version, and this version of News Clipper is
+    compatible with version $COMPATIBLE_NEWS_CLIPPER_VERSION.
+  EOF
 
   if ($local_handler_nc_version != $COMPATIBLE_NEWS_CLIPPER_VERSION)
   {
-    $errors{"handler#$handlerName"} =
-      "Handler is incompatible. (Compatible with News Clipper versions that " .
-      "take handlers from version $local_handler_nc_version, but this " .
-      "version of News Clipper uses handlers from version " .
-      "$COMPATIBLE_NEWS_CLIPPER_VERSION).";
+    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
+       Handler $handler_name is incompatible with this version of News Clipper.
+       (The handler is compatible with News Clipper versions that take handlers
+       from version $local_handler_nc_version, but this version of News Clipper
+       uses handlers from version $COMPATIBLE_NEWS_CLIPPER_VERSION).
+    EOF
     return 0;
   }
   else
@@ -586,49 +713,82 @@ sub _HandlerVersionIsCompatible($)
 
 # ------------------------------------------------------------------------------
 
-my @acquisitionHandlers;
-sub _GetAcquisitionHandlers
+# Download the handler type from the remote server, caching it locally in
+# %handler_type. Dies with a message if the server can't be contacted, or the
+# returned data can't be parsed.
+
+sub _GetRemoteHandlerType
 {
-  if (@acquisitionHandlers)
+  my $handler_name = shift;
+
+  if (exists $handler_type{$handler_name})
   {
-    dprint "Reusing cached list of acquisition handlers.";
-    return @acquisitionHandlers;
+    dprint "Reusing cached handler type information " .
+      "($handler_name is $handler_type{$handler_name})";
+    return $handler_type{$handler_name};
   }
 
-  dprint "Downloading list of acquisition handlers.\n";
+  dprint "Downloading handler type information.\n";
 
-  my $url = "http://" . $HANDLER_SERVER . "/cgi-bin/getinfo?field=Type&string=Acquisition&print=Name&ncversion=$main::VERSION";
+  my $url = "http://" . $HANDLER_SERVER .
+    "/cgi-bin/getinfo?field=Name&string=$handler_name&" .
+    "print=Type&ncversion=$main::VERSION";
 
   my $data = _DownloadURL($url);
 
-  die "Couldn't download the list of acquisition handlers. Maybe".
-         " the server is down.\n"
+  die reformat dequote <<"  EOF"
+    Couldn't download the handler type for handler $handler_name. Maybe
+    the server is down. This version of News Clipper can only use a limited
+    number of acquisition handlers, and must contact the server to determine
+    if the handler is an acquisition handler. Try again in a while, and send
+    email to bugreport\@newsclipper.com if the problem persists.
+  EOF
     unless defined $data;
 
-  my (@handlers) = $$data =~ /Name +: (.*)/g;
-  @acquisitionHandlers = @handlers;
-  return @handlers;
+  if ($$data =~ /Type +: (.*)/)
+  {
+    $handler_type{$handler_name} = $1;
+    return $handler_type{$handler_name};
+  }
+  else
+  {
+    die reformat dequote <<"    EOF";
+ERROR: Couldn't parse handler type information fetched from server. Please
+send email to bugreport\@newsclipper.com describing this message. Fetched
+content was:
+$$data
+    EOF
+  }
 }
 
 # ------------------------------------------------------------------------------
 
-# Figure out where the handler is in the file system. (This function does not
-# load the handler.)
+# Figure out where the handler is in the file system. Returns undef if not
+# found.
 
 sub _GetHandlerPath($)
 {
-  my $handlerName = shift;
+  my $handler_name = shift;
+
+  # Try to load the handler so we can figure out where to put the replacement
+  my $loadResult = _LoadHandler($handler_name);
+
+  if ($loadResult eq 'not found')
+  {
+    dprint "Handler \"$handler_name\" not found locally. Can't get path.";
+    return undef;
+  }
 
   my @dirs = qw(Acquisition Filter Output);
 
   foreach my $dir (@INC)
   {
     return "$dir/NewsClipper/Handler/Acquisition"
-      if -e "$dir/NewsClipper/Handler/Acquisition/$handlerName.pm";
+      if -e "$dir/NewsClipper/Handler/Acquisition/$handler_name.pm";
     return "$dir/NewsClipper/Handler/Filter"
-      if -e "$dir/NewsClipper/Handler/Filter/$handlerName.pm";
+      if -e "$dir/NewsClipper/Handler/Filter/$handler_name.pm";
     return "$dir/NewsClipper/Handler/Output"
-      if -e "$dir/NewsClipper/Handler/Output/$handlerName.pm";
+      if -e "$dir/NewsClipper/Handler/Output/$handler_name.pm";
   }
 
   return undef;
@@ -636,57 +796,76 @@ sub _GetHandlerPath($)
 
 # ------------------------------------------------------------------------------
 
-# Loads or reloads a handler, depending on whether the second argument is
-# nonzero.
+# "Unloads" a handler by deleting the entry in %INC and undefining any
+# subroutines.
 
-sub _LoadHandler($$)
+sub _UnLoadHandler($)
 {
-  my $handlerName = shift;
-  my $reload = shift;
+  my $handler_name = shift;
 
-  if ($reload)
-  {
-    dprint "Trying to reload handler \"$handlerName\"";
+  dprint "Unloading handler \"$handler_name\"";
 
-    delete $INC{"NewsClipper/Handler/Acquisition/$handlerName.pm"};
-    delete $INC{"NewsClipper/Handler/Filter/$handlerName.pm"};
-    delete $INC{"NewsClipper/Handler/Output/$handlerName.pm"};
-  }
-  else
+  my $handler_type = undef;
+
+  # Find out what kind of handler it is
+  $handler_type = 'Acquisition'
+    if exists $INC{"NewsClipper/Handler/Acquisition/$handler_name.pm"};
+  $handler_type = 'Filter'
+    if exists $INC{"NewsClipper/Handler/Filter/$handler_name.pm"};
+  $handler_type = 'Output'
+    if exists $INC{"NewsClipper/Handler/Output/$handler_name.pm"};
+
+  die "_UnLoadHandler called on $handler_name, but $handler_name is not " .
+    "in %INC\n"
+    unless defined $handler_type;
+
+  # Delete it from %INC
+  delete $INC{"NewsClipper/Handler/$handler_type/$handler_name.pm"};
+
+  # Now undef each function
+  foreach my $symbol (keys %File::Cache::)
   {
-    dprint "Trying to load handler \"$handlerName\"";
+    undef &{$File::Cache::{$symbol}} if defined &{$File::Cache::{$symbol}};
   }
+}
+
+# ------------------------------------------------------------------------------
+
+# Loads a handler.  Returns "found as
+# NewsClipper::Handler::${dir}::$handler_name" if the handler is found on the
+# system, and "not found" if it can't be found.  Dies if the handler is found
+# but has errors.
+
+sub _LoadHandler($)
+{
+  my $handler_name = shift;
 
   my @dirs = qw(Acquisition Filter Output);
+
+  dprint "Trying to load handler \"$handler_name\"";
 
   # Return if it has already been loaded before. This helps speed things up.
   foreach my $dir (@dirs)
   {
-    if (defined $INC{"NewsClipper/Handler/$dir/$handlerName.pm"})
+    if (defined $INC{"NewsClipper/Handler/$dir/$handler_name.pm"})
     {
-      dprint "Handler \"$handlerName\" already loaded";
-      return "Found as NewsClipper::Handler::${dir}::$handlerName" 
+      dprint "Handler \"$handler_name\" already loaded";
+      return "found as NewsClipper::Handler::${dir}::$handler_name" 
     }
   }
 
   foreach my $dir (@dirs)
   {
     # Try to load it in $dir
-    dprint "Looking for handler as NewsClipper::Handler::$dir\::$handlerName";
+    dprint "Looking for handler as:";
+    dprint "  NewsClipper::Handler::$dir\::$handler_name";
 
     # Here we need to store errors.
     my $errors;
     {
-      local $SIG{__WARN__} =
-        sub
-        {
-          # We ignore redefined messages during reload
-          return if $reload && $_[0] =~ /Subroutine (\w+) redefined/;
+      local $SIG{__WARN__} = sub { $errors .= $_[0] };
 
-          $errors .= $_[0]
-        };
-
-      eval "require NewsClipper::Handler::${dir}::$handlerName";
+      eval "require NewsClipper::Handler::${dir}::$handler_name";
     }
 
 # At this point, the possibilities are:
@@ -703,68 +882,60 @@ sub _LoadHandler($$)
     if ($@)
     {
       # We'll skip can't locate messages, but stop on everything else
-      if ($@ !~ /Can't locate NewsClipper.Handler.$dir.$handlerName/)
+      if ($@ !~ /Can't locate NewsClipper.Handler.$dir.$handler_name/)
       {
         $@ =~ s/Compilation failed in require at \(eval.*?\n//s;
 
-        warn "Handler $handlerName was found in:\n";
-        warn "  ",$INC{"NewsClipper/Handler/$dir/$handlerName.pm"},"\n";
+        warn "Handler $handler_name was found in:\n";
+        warn "  ",$INC{"NewsClipper/Handler/$dir/$handler_name.pm"},"\n";
         warn "  but could not be loaded because of the following error:\n\n";
         warn "$errors\n" if defined $errors;
         die "$@\n";
       }
     }
 
-    if (defined $INC{"NewsClipper/Handler/$dir/$handlerName.pm"})
+    if (defined $INC{"NewsClipper/Handler/$dir/$handler_name.pm"})
     {
       dprint "Found handler as:\n ",
-                  $INC{"NewsClipper/Handler/$dir/$handlerName.pm"};
+                  $INC{"NewsClipper/Handler/$dir/$handler_name.pm"};
 
       # If there's anything in $errors, it must be warnings. Store them
       # for later printing.
-      $errors{"handler#$handlerName"} = $errors if defined $errors;
+      $errors{"handler#$handler_name"} = $errors if defined $errors;
 
-      return "Found as NewsClipper::Handler::$dir\::$handlerName"
+      return "found as NewsClipper::Handler::$dir\::$handler_name"
     }
 
     # We can get here if the eval has a syntax error. (e.g. if someone tries
     # to use handler.pm as the handler name)
     if ($errors)
     {
-      warn "Handler $handlerName could not be loaded. The error was:\n";
+      warn "Handler $handler_name could not be loaded. The error was:\n";
       die "$errors\n";
     }
   }
 
   # Darn. Couldn't find it anywhere!
   dprint "Couldn't find handler";
-  return "Not found";
-
+  return 'not found';
 }
 
 # ------------------------------------------------------------------------------
 
 # This function downloads and saves a remote handler, if one exists. Returns
-# 'okay' or 'failed'
+# 'okay', 'not found', or 'failed: error message'
 
 sub _DownloadHandler($$)
 {
-  my $handlerName = shift;
+  my $handler_name = shift;
   my $version = shift;
 
-  dprint "Downloading handler $handlerName, version $version";
+  dprint "Downloading handler $handler_name, version $version";
 
-  # Try to load the handler so we can figure out where to put the replacement
-  my $loadResult = _LoadHandler($handlerName,0);
+  my ($getResult,$code) = _GetHandlerCode($handler_name,$version);
+  return $getResult if $getResult ne 'okay';
 
-  my ($getResult,$code) = _GetHandlerCode($handlerName,$version);
-
-  return 'failed' if $getResult ne 'okay';
-
-  my $foundDirectory = _GetHandlerPath($handlerName);
-
-  # Remove the outdated one.
-  unlink "$foundDirectory/$handlerName.pm" if defined $foundDirectory;
+  my $foundDirectory = _GetHandlerPath($handler_name);
 
   # Use the old directory, or create a new one based on what the handler calls
   # itself.
@@ -772,6 +943,10 @@ sub _DownloadHandler($$)
   if (defined $foundDirectory)
   {
     dprint "Replacing handler located in\n  $foundDirectory";
+
+    # Remove the outdated one.
+    unlink "$foundDirectory/$handler_name.pm";
+
     $destDirectory = $foundDirectory;
   }
   else
@@ -786,13 +961,14 @@ sub _DownloadHandler($$)
   mkpath $destDirectory unless -e $destDirectory;
 
   # Write the handler.
-  open HANDLER,">$destDirectory/$handlerName.pm"
-    or return 'failed';
+  open HANDLER,">$destDirectory/$handler_name.pm"
+    or return "failed: Handler $handler_name was downloaded, but could " .
+      " not be saved. The message from the operating system is:\n\n$!";
   print HANDLER $code;
   close HANDLER;
 
-  warn "The $handlerName handler has been downloaded and saved as\n";
-  warn "  $destDirectory/$handlerName.pm\n";
+  warn "The $handler_name handler has been downloaded and saved as\n";
+  warn "  $destDirectory/$handler_name.pm\n";
 
   # Figure out if the handler needs any other modules.
   my @uses = $code =~ /\nuse (.*?);/g;
@@ -818,50 +994,51 @@ sub _DownloadHandler($$)
 # calling this function.
 
 # This function returns two values:
-# - an error code: (okay, Download failed)
+# - an error code: (okay, not found, failed: error message)
 # - the handler (if the error code is okay)
-
-# Cache downloaded code for this run.
-my %downloadedCode;
 
 sub _GetHandlerCode($$)
 {
-  my $handlerName = shift;
+  my $handler_name = shift;
   my $version = shift;
 
-  dprint "Downloading code for handler \"$handlerName\"";
+  dprint "Downloading code for handler \"$handler_name\"";
 
-  if (defined $downloadedCode{$handlerName})
+  if (defined $downloadedCode{$handler_name})
   {
     dprint "Reusing already downloaded code.";
-    return ('okay',$downloadedCode{$handlerName});
+    return ('okay',$downloadedCode{$handler_name});
   }
 
   my $url;
 
-  $url = "http://" . $HANDLER_SERVER . "/cgi-bin/gethandler?tag=$handlerName&ncversion=$main::VERSION&version=$version";
+  $url = "http://" . $HANDLER_SERVER .
+         "/cgi-bin/gethandler?tag=$handler_name&" .
+         "ncversion=$main::VERSION&version=$version";
 
   my $data = _DownloadURL($url);
 
   if (defined $data && $$data =~ /^Handler not found/)
   {
-    warn "Server reports that handler \"$handlerName\" doesn't exist.\n";
-    return ('Handler not found',undef);
+    return ('not found',undef);
   }
 
   # If either the download failed, or the thing we got back doesn't look like
   # a handler...
   if ((!defined $data) || ($$data !~ /package NewsClipper/))
   {
-    warn "Couldn't download handler \"$handlerName\"." .
-      " Maybe the server\n  is down.\n";
+    my $error_message = reformat dequote <<"    EOF";
+      failed: Couldn't download handler $handler_name. Maybe the server is
+      down. Try again in a while, and send email to bugreport\@newsclipper.com
+      if the problem persists.
+    EOF
 
-    warn "Message from server is:\n\n$$data\n" if defined $data;
+    $error_message .= " Message from server is: $$data\n" if defined $data;
 
-    return ('Download failed',undef);
+    return ($error_message,undef);
   }
 
-  $downloadedCode{$handlerName} = $$data;
+  $downloadedCode{$handler_name} = $$data;
 
   return ('okay',$$data);
 }
@@ -873,6 +1050,7 @@ sub _GetHandlerCode($$)
 # Params:
 # 1) the handler name
 # 2) whether you want only a bugfix update, not a functional update too
+#    ('bugfix','functional')
 # Returns:
 # 1) status: okay, failed, not found, no update
 # 2) the version
@@ -882,22 +1060,22 @@ sub _GetHandlerCode($$)
 
 sub _GetNewHandlerVersion($$)
 {
-  my $handlerName = shift;
+  my $handler_name = shift;
   my $needBugfix = shift;
 
-  dprint "Checking for a new version for handler \"$handlerName\"";
+  dprint "Checking for a new version for handler \"$handler_name\"";
 
   # A version of undef means that we want whatever the newest version is,
   # regardless of functional compatibility.
-  my $localVersion = _GetLocalHandlerVersion($handlerName);
+  my $localVersion = _GetLocalHandlerVersion($handler_name);
 
   my $url = "http://" . $HANDLER_SERVER .
-    "/cgi-bin/checkversion?tag=$handlerName&ncversion=$main::VERSION";
+    "/cgi-bin/checkversion?tag=$handler_name&ncversion=$main::VERSION";
 
   # Server assumes no version param means get most recent version
   $url .= "&version=$localVersion" if defined $localVersion;
 
-  if ($needBugfix)
+  if ($needBugfix eq 'bugfix')
   {
     $url .= "&debug=1";
   }
@@ -906,20 +1084,12 @@ sub _GetNewHandlerVersion($$)
     $url .= "&debug=0";
   }
 
-  dprint "Checking for new version for handler \"$handlerName\"";
   my $data = _DownloadURL($url);
-
-  # If the download failed...
-  unless (defined $data)
-  {
-    warn "Couldn't download handler version information for \"$handlerName\"." .
-      " Maybe the server\n  is down.\n";
-    return 'failed';
-  }
+  return 'failed' unless defined $data;
 
   if ($$data =~ /^Handler not found/)
   {
-    dprint "Server reports that handler \"$handlerName\" doesn't exist.\n";
+    dprint "Server reports that handler \"$handler_name\" doesn't exist.\n";
     return 'not found';
   }
 

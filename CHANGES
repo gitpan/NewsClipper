@@ -1,3 +1,19 @@
+New in version 1.24:
+- Added a lockfile (~/.NewsClipper/lock) that prevents more than one copy of
+  News Clipper from running at the same time. (LockFile::Simple module now
+  required.)
+- Faster verification of handler type during counting of number of installed
+  acquisition handlers (affects commercial versions only)
+- Decreased dependence on handler server during couting of number of installed
+  acquisition handlers (affects commercial versions only)
+- Installation no longer requires "make NewsClipper_Cleanup" step
+- Installation now automatically converts older configuration files.
+- Added ExtractTables function to HTMLTools. (Thanks to Chris Pimlott
+  <pimlottc@null.net> for the initial implementation and idea.)
+- Non-fatal errors while contacting the handler server are now printed in the
+  output as HTML comments.
+- A few speed improvements.
+
 New in version 1.23:
 - Fixed MakeHandler.pl so that it doesn't insert comment characters ("#") into
   the syntax information. (bugfix)

@@ -17,7 +17,7 @@ use vars qw( @ISA @EXPORT $VERSION );
 @ISA = qw( Exporter );
 @EXPORT = qw(GetUrl GetHtml GetImages GetLinks GetText);
 
-$VERSION = 0.64;
+$VERSION = 0.65;
 
 use NewsClipper::Globals;
 
@@ -63,12 +63,15 @@ sub GetUrl($)
 
     # Now see if the remote content hasn't changed. If it hasn't, we can
     # just return the cached data.
-    my $last_modified = _GetLastModifiedTime($url);
-    my $cached_time = $NewsClipper::Globals::cache->GetTimeCached($url);
-    if (defined $last_modified && defined $cached_time &&
-        $cached_time > $last_modified)
+    if ($cacheStatus eq 'stale')
     {
-      return \$cachedData
+      my $last_modified = _GetLastModifiedTime($url);
+      my $cached_time = $NewsClipper::Globals::cache->GetTimeCached($url);
+      if (defined $last_modified && defined $cached_time &&
+          $cached_time > $last_modified)
+      {
+        return \$cachedData
+      }
     }
   }
 

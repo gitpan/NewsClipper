@@ -14,9 +14,9 @@ use vars qw( @ISA @EXPORT $VERSION );
 @ISA = qw( Exporter );
 @EXPORT = qw( ExtractText MakeLinksAbsolute StripTags
               EscapeHTMLChars StripAttributes HTMLsubstr
-              TrimOpenTags GetAttributeValue );
+              TrimOpenTags GetAttributeValue ExtractTables );
 
-$VERSION = 0.61;
+$VERSION = 0.70;
 
 use NewsClipper::Globals;
 
@@ -451,6 +451,89 @@ sub GetAttributeValue($$$)
   {
     return undef;
   }
+}
+
+# ------------------------------------------------------------------------------
+
+# Extracts all tables. Nested tables are not extracted separately--they are
+# treated as part of the enclosing table.  Takes one long string (or a
+# reference to one) and returns an array of strings (or references to strings).
+
+sub ExtractTables($)
+{
+  my $html = shift;
+
+  return undef unless defined $html;
+
+  unless (UNIVERSAL::isa(\$html,'SCALAR') || UNIVERSAL::isa($html,'SCALAR'))
+  {
+    die reformat dequote<<"    EOF";
+      ExtractTables only takes values of type "SCALAR".
+    EOF
+  }
+
+  my $returnRef = 0;
+
+  if (ref $html)
+  {
+    $returnRef = ref $html;
+    $html = $$html;
+  }
+
+  my @tables;
+  my $depth=0;
+  my $newtable;
+
+  while ($html =~ /\G(.*?)(<\s*table\b[^>]*>|<\s*\/\s*table\s*>)/isg)
+  {
+    my ($prefix,$match) = ($1,$2);
+
+    # Start of table
+    if ($match =~ /<\s*table/i)
+    {
+      $depth++;
+
+      # Brand new table
+      if ($depth == 1)
+      {
+        $newtable = $match;
+      }
+      # Internal table
+      else
+      {
+        $newtable .= "$prefix$match";
+      }
+    }
+    # End of table
+    else
+    {
+      # We might see an out-of-place </table>
+      next if $depth == 0;
+
+      $depth--;
+      $newtable .= "$prefix$match";
+
+      # Done with table
+      if ($depth == 0)
+      {
+        if ($returnRef)
+        {
+          push (@tables, \$newtable);
+        }
+        else
+        {
+          push (@tables, $newtable);
+        }
+      }
+      # Internal table
+      else
+      {
+        $newtable .= "$prefix$match";
+      }
+    }
+  }
+
+  return @tables;
 }
 
 1;

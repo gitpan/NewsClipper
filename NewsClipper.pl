@@ -24,8 +24,9 @@ use strict;
 
 use Getopt::Long;
 use FileHandle;
+use LockFile::Simple;
 
-use vars qw( %config %opts $VERSION $COMPATIBLE_CONFIG_VERSION );
+use vars qw( %config %opts $VERSION $COMPATIBLE_CONFIG_VERSION $lock_manager );
 
 # These need to be predeclared so that this code can be parsed and run until
 # we load the NewsClipper::Globals module. WARNING! Be careful to not use
@@ -39,7 +40,7 @@ sub dequote($;$);
 use vars qw(&dprint &reformat &dequote);
 
 # The version of the script
-$VERSION = do {my @r=(q$ 1.2.3 $=~/\d+/g);sprintf"%d."."%1d"x$#r,@r};
+$VERSION = do {my @r=(q$ 1.2.4 $=~/\d+/g);sprintf"%d."."%1d"x$#r,@r};
 
 # The version of configuration file that this version of News Clipper can use.
 $COMPATIBLE_CONFIG_VERSION = 1.21;
@@ -65,6 +66,19 @@ sub PrintDebugSummary(\@);
 
 # Print the usage if the -h flag was used
 print_usage() && exit(0) if $opts{h};
+
+# Set up the lockfile. SetupConfig() above created .NewsClipper, so we can
+# lock on that.
+$lock_manager = LockFile::Simple->make(-autoclean => 1, -nfs => 1,
+  -stale => 1, -warn => 0, -wfunc => undef, -efunc => undef,
+  -format => "$NewsClipper::Globals::home/.NewsClipper/lock");
+$lock_manager->lock("$NewsClipper::Globals::home/.NewsClipper")
+  or die reformat dequote<<"  EOF";
+    There is already another copy of News Clipper running. This copy of News
+    Clipper waited 60 seconds for the other copy to finish. Aborting. (You
+    should delete $NewsClipper::Globals::home/.NewsClipper/lock if you are
+    sure that no other News Clipper is running.)
+  EOF
 
 HandleProxyPassword();
 HandleClearCache();
@@ -357,6 +371,7 @@ sub print_usage()
     -r Forces caching proxies to reload data
     -d Enable debug mode
     -v Output to STDOUT in addition to the file. (Unix only.)
+    -C Clear the cache
   EOF
 }
 
@@ -1144,6 +1159,7 @@ END
 #perl2exe_include Date/Format
 #perl2exe_include Net/NNTP
 #perl2exe_include File/Spec/Win32.pm
+#perl2exe_include Storable
 
 #-------------------------------------------------------------------------------
 
@@ -1292,6 +1308,11 @@ Clipper. Output is sent to the screen instead of the output file.
 
 Verbose output. Output a copy of the information sent to the output file to
 standard output. Does not work on Windows or DOS.
+
+=item B<-C>
+
+Clear the News Clipper cache. Clearing the cache significantly slows down News
+Clipper and increases network traffic on remote servers---use with care.
 
 =back
 
