@@ -1,0 +1,336 @@
+New in version 1.17:
+- A parsing bug in <a href> links was found (and fixed!) by Ludovic Drolez
+  (Ludovic Drolez <ldrolez@usa.net>)
+- The way the configuration information is loaded has changed:
+  - On non-Windows machines, News Clipper always loads the system-wide
+    configuration file NEWSCLIPPER/NewsClipper.cfg, where NEWSCLIPPER is the
+    path specified by the NEWSCLIPPER environment variable.
+  - Per-user configuration information is then loaded from
+    $home/.NewsClipper/NewsClipper.cfg, or the file specified with the -c
+    option.
+  - Personal config files can now override system-wide configuration
+    information on an item-by-item basis. This means that the user's config
+    file doesn't have to have "$ENV{TZ}", imgcache settings, proxy settings,
+    etc. if all they want to do is override the timeout values.
+- Fixed a bug where cached data would not be used if a HTTP request failed.
+  Thanks to Vadim Strizhevsky <vadim@optonline.net> for finding the bug.
+- Fixed a bug in checking version information for update of handlers.
+- Consolidated common code into NewsClipper::Globals (dprint, DEBUG, etc.)
+  Added a few useful functions to improve code and output message readability
+  (dequote, reformat).
+- Improved timeout handling, so that errors get propagated correctly, and the
+  script exits with the correct value. (Thanks to Ludovic Drolez
+  <ldrolez@usa.net> for finding the bug.) Hopefully News Clipper works
+  correctly in makefiles now.
+- Fixed a potential bug in NewsClipper::HTMLTools::HTMLsubstr
+
+New in version 1.16:
+- Updated compiler-related code
+- Changed licensing code.
+- Updated README instructions
+- Improved installation instructions
+- Improved installation script
+- Changed numbering scheme to X.YZ, where X is the major version number, Y is
+  increased with each functionality enhancement, and Z is increased with each
+  bugfix release for a given Y.
+- NOTE: The open source version will lead the commercial version in releases.
+  The "official" version number will be the commercial version.
+
+New in version 1.0104:
+- Fixed a performance bug in the Trial version code (HandlerFactory.pm).
+- -h now prints version and registration information
+
+New in version 1.0102:
+- Fixed the brain-dead non-monotonically increasing version numbering :)
+- Fixed a bug in input file validation, when "STDIN" is used as the file.
+  (Thanks to Jamie Wall <jwall@webpeak.com> for finding it)
+- Fixed a bug with -c. (Thanks to morbus@disobey.com for helping to find it)
+- Fixed a bug that occurs when checking for new versions and the handler
+  server is down. (Thanks to tg@linuxmafia.org for helping to find it.)
+- Fixed a typo in the NewsClipper.cfg file: maxcachesize is in MB, not bytes.
+- Updated the template to work with the new yahootopstories handler.
+- Made Makefile.PL for unix installations interactive instead of specifying
+  everything on the command line.
+
+New in version 1.0001:
+- Code modified to point to the new handler server at handlers.newsclipper.com
+  (instead of newsclipper.binaryresearch.net).
+- Fixed typo in MakeHandler.pl (\\&main::dprint, not \&main::dprint)
+- Added licensing code:
+  - email and regKey in NewsClipper.cfg,
+  - key verification in NewsClipper.pl
+  - handler counting code in HandlerFactory.pm
+  - Nag in output for trial version
+- Clarified a few error messages.
+
+New in version 1.00:
+- Significantly faster update of out-of-date handlers.
+- Anti-abuse measures implemented to help reduce unnecessary load on the
+  handler server.
+- Added types to the handlers and News Clipper commands, which helps catch
+  errors.
+- A new name, new web page, fancy compiled versions, a nice user's manual, a
+  dedicated server, and improved technical support. (Well, most of that's for
+  the commercial version. Non-commercial users only get the name, web page,
+  and server :)
+
+-------------- History before Daily Update became News Clipper --------------
+
+New in version 7.1: 
+- You can now specify "STDIN" and "STDOUT" as the input and output files in
+  DailyUpdate.cfg. This allows you to use Daily Update as a filter, piping the
+  data to and from it. You can also use a file name and STDOUT to force DU to
+  output to standard output.
+- Debugging mode is now activated using the -d switch. It outputs lots of
+  useful information that can help you nail down problems you might have.
+- Some speed improvements.
+- Date::Manip has been replaced by Time::CTime and Time::ParseDate, which are
+  a lot faster. 
+
+New in version 7.0: 
+- This is a major rewrite, with a new syntax and improved support for web
+  developers.
+- See the file MIGRATING for hints on how to move to the new version from
+  older versions, and how to upgrade handlers you've written.
+- None of the old handlers work. You'll have to download the new ones and
+  migrate the ones you've written yourself but haven't submitted to me.
+- Improved caching
+- New, separated input, filtering, and output commands. This means you'll have
+  to update your input files to reflect the new syntax.
+- New and improved MakeHandler.pl
+- -v for verbose output
+- Added StripAttributes HTMLsubstr TrimOpenTags functions to HTMLTools.
+- Added day of the week and timezone support to handler update times.
+- New web support for browsing handlers
+- Daily Update mailing list
+- Now Daily Update prints a message if it times out.
+- When a handler fails, a comment is inserted in the output instead of
+  printing it to visible HTML.
+- Miscellaneous bug fixes
+- Miscellaneous bugs introduced. :) (I reworked a lot of the code.)
+
+New in version 6.1:
+- Miscellaneous bug fixes and improvements to GetText, GetLinks, and
+  GetImages.
+- Added -v (verbose output) support.
+- Setup changed so -I isn't necessary when running as a CGI program.
+- Message now displayed when Daily Update times out.
+- Output file now automatically chmod'd to 755. (Executable in case you call
+  server-side scripts like I do.)
+
+New in version 6.02:
+- Added return values for those of you who like to use makefiles to build web
+  pages.
+- Added documentation for MakeHandler.pl.
+- Bug fixed in output columns function. (Thanks to Craig Brockmeier
+  <craig@seurat.ppco.com> for finding it.)
+- I've revamped the configuration and install procedure to make it more
+  amenable to site-wide installation. DailyUpdate.cfg is looked for in
+  ~/.DailyUpdate, and handlers are installed in the first directory specified
+  by handlerlocations in DailyUpdate.cfg. (~/.DailyUpdate by default.) You'll
+  need to fix up your handlerLocations variable if you're upgrading from a
+  previous version. (Thanks to John Goerzen <jgoerzen@complete.org> for his
+  invaluable input.)
+- Added support for proxies requiring passwords. (Thanks to Kevin D.
+  Clark <kclark@cabletron.com>.)
+- Fixed a bug in HTMLTools.pm. (Thanks to Mark Harburn
+  <Mark.Harburn@durham.ac.uk>).
+
+New in version 6.01:
+- Added -r switch to force proxies to reload cached data during data
+  acquisition. (Thanks to Gerhard Wiesinger <e9125884@student.tuwien.ac.at>)
+- Fixed a couple of minor bugs.
+- Improved installation to automatically set #! line and set INSTALLDIRECTORY
+  in DailyUpdate.pl.
+- Configuration doesn't have to be in the same directory as the DailyUpdate.pl
+  file. (You can leave the DailyUpdate.cfg file in the install directory, and
+  move the DailyUpdate.pl file wherever you want, like cgi-bin.)
+- During automatic installation, handlers are now put in the install
+  directory, not the directory of the currently running DailyUpdate.pl script.
+
+New in version 6.0:
+- Sorry about the big version jump. I had to do it because I switched over to
+  the standard Perl numbering scheme. (5.2 becomes 5.02, which is less than
+  5.1). Maybe some of these features will justify the leap. :)
+- Now the installation mimicks the usual "perl Makefile.PL;make;make install"
+  of perl modules.
+- The script now supports multiple input and output files in the configuration
+  file.
+- Changed the syntax from <dailyupdate...> to <!--dailyupdate...--> so that
+  WYSIWYG editors won't croak on the 'unknown' tag.
+- Moved HTML-related functionality from AcquisitionFunctions.pm to
+  HTMLTools.pm, and added function StripTags.
+- Fixed 2 bugs in MakeLinksAbsolute. (Thanks to Kazuo Moriwaka
+  <kankun@osa.att.ne.jp> and Phillip Gersekowski
+  <philg@toonews.c-link.com.au>)
+- Enhanced Handler to work better in the face of bad data acquisition and
+  filtering.
+- Added OutputList to OutputFunctions.pm, which allows you to set the format
+  and number of columns when printing out lists.
+
+New in version 5.1:
+- Update times are now set by the handlers by overriding GetUpdateTimes. (The
+  default is 2,5,8,11,14,17,20,23.) Users can also customize the update times
+  in the configuration file, if they don't like the ones given by the
+  handlers. Modified MakeHandler.pl to support this.
+- Fixed a caching bug that would cause (a) multiple copies of some data when a
+  tag is used more than once on the same page, and (b) reuse of cached data
+  even when the style has been changed.
+- Added -a flag for automatic download of handlers.
+- Added -n flag to check for new versions of handlers.
+- Fixed prerequisites.
+- Removed use of the deprecated HTML::Parse in AcquisitionFunctions.pm
+
+New in version 5.0.2:
+- Fixed data caching.
+- MakeHandler.pl now stores the URL in the comment block.
+- Created POD documentation in DailyUpdate.pl
+- Fixed a problem with the loading of configuration information
+
+New in version 5.0.1:
+- Fixed a bug in MakeHandler.pl
+- Improved error checking for missing Perl modules when installing new
+  handlers.
+
+New in version 5.0: This is a major rewrite.
+- Handlers, implemented as Perl classes, are now used instead of the schemas
+  of previous versions. The GetHtml, GetText, OutputTwoColumn,
+  OutputUnorderedList, etc. functions are now part of two APIs that can be
+  used by handler writers: DailyUpdate::AcquisitionFunctions, and
+  DailyUpdate::OutputFunctions.
+- No handlers are distributed with Daily Update.  Instead, the user is
+  prompted for permission to install them as necessary. This makes using a new
+  tag easy -- just put it in your input file, run Daily Update once manually,
+  and tell it to download the handler.
+- The handlers are real Perl, instead of the pseudo Perl used in the schemas.
+  This increases the difficulty of adding new tags, but gives people a lot
+  more flexibility. To help things, I've included a script "MakeHandler.pl"
+  which will create a prototype handler based on user inputs.
+- GetText now uses HTML::FormatText.
+- Tags are now of the syntax <dailyupdate name=X>
+
+New in version 4.6:
+- Added notification support for new versions.
+- Added -c flag for user-specified configuration file. Dropped use of POSIX
+  (for NT compatibility.)
+- Fixed a bug in relative to absolute link conversion.  (Thanks to C. Harald
+  Koch <chk@amdur.com>)
+- URLs can now be of the format "file://...".
+- Added GetImages acquisition function (thanks to Tanner Lovelace
+  <lovelace@cs.unc.edu>).
+- Now the %attributes hash can be referenced in the URL or tag name of a
+  schema--added <unitedmediacomic> tag to illustrate its use.
+- Made changes to the config file to support better schema design.
+- Added "How to Write Schemas" page at
+  http://www.cs.virginia.edu/~dwc3q/code/writeschemas.html.
+- Moved to URI from URI::URL, which is now deprecated.
+
+New in version 4.5:
+- Added acquisition function GetHtml.
+- Added -i and -o flags for input and output files.
+- Now reads old html file only once (faster). 
+- Added "always" schema time option.
+- Now checks script directory for configuration file.
+- Miscellaneous bug fixes, new data sources, and minor enhancements.
+
+New in version 4.4:
+- Separated configuration from main script (yea!).
+- Fixed "uninitialized variable" warnings.
+- Created user-submitted schemas webpage at
+  http://www.cs.virginia.edu/~dwc3q/code/schemas.html.
+- Added more data acquisition schemas.
+
+New in version 4.3:
+- Added Infoworld, and Adam@Home.
+- Changed date & time handlers to take any valid strftime format string, and
+  made url attribute to weather mandatory.
+- Changed CoolSite to use their logo.
+- Script only dumps to screen if called as a cgi script.
+- Added default values to date, time, and OutputListOrColumns.
+
+New in version 4.2:
+- Added "linuxtoday", and "time".
+- Modified GetText & GetLinks to take "^" and "\$" signifying start and end of
+  file.
+- Added proxy support.
+- Fork is now disabled on Windows platforms.
+- Moved from HTML::Parse to HTML::Parser.
+
+New in version 4.1:
+- Added "User Friendly" and "Freshmeat" support.
+- Fixed Slashdot so that it takes a style.
+- Changed it to use LWP instead of my own HTTP sockets stuff.
+
+New in version 4.0:
+- This is a total rewrite, resulting in a modular, extensible script that is
+  half the size of the previous version.
+
+New in version 3.5.4:
+- Added Peanuts (Thanks to Alvaro Herrera <alvherre@enlaces.c5.cl>)
+- Also fixed the news from the AP.
+
+New in version 3.5.2:
+- Fixed a bug in the routine to detect if we need to update the data.
+
+New in version 3.5.1:
+- Improved calculation of when cached data should be used. Hopefully it's
+  less buggy.
+
+New in version 3.5:
+- Added support for Slashdot. Did a major cleanup of the code.
+
+New in version 3.4.6:
+- Fixed script to work with new Calvin and Hobbes webpage.
+- Improved algorithms for changing relative URLs to absolute in headlines.
+
+New in version 3.4.5:
+- More enhanced parsing of weather.
+
+New in version 3.4.4:
+- Fixed Dr. Science and Sports.
+- Enhanced parsing of weather.
+
+New in version 3.4.2:
+- Fixed a bug in the weather processing code.
+
+New in version 3.4.1:
+- Fixed the extra line in the headlines
+
+New in version 3.4:
+- Updated DailyUpdate to work with the new CNN/SI homepage.
+
+New in version 3.3.3:
+- Updated DailyUpdate to work with the new Yahoo headlines format
+
+New in version 3.3.1:
+- Fixed dilbert to handle absolute & relative URLs for the image.
+
+New in version 3.3.1:
+- Fixed dilbert to work with the new Dilbert Zone format
+
+New in version 3.3:
+- Added Calvin and Hobbes
+- Fixed a bug that caused nothing to be output for the first use of the tags.
+
+New in version 3.2.1:
+- Finally fixed the timeouts to work correctly.
+
+New in version 3.2:
+- Thanks to Christian Blair for helping to make the script more robust.
+
+New in version 2.9:
+- Thanks to Bob Anzlovar for the addition of the Dr. Science question of the
+  day.
+- He also changed the script to "use Socket" instead of "require socket.ph".
+  I agree with his thinking on this, however users of older versions of Perl
+  will have to do some comment work on the geturl procedure. In a couple of
+  versions I'm going to stop backward support, since Perl 5 is the way to go...
+
+New in version 2.8:
+- In this version I've commented out the telnet for weather and replaced it
+  with an html grab, which seems much faster. For those people who need the
+  weather thrice daily (and have a fast connection) or who can't get the
+  forecast they need from
+  http://cirrus.sprl.umich.edu/wxnet/states/states.html, put the telnet
+  command in line 173 back in and remove the wwwgrab line. Then comment out
+  the weather site and remove the comments for a telnet weathersite.
