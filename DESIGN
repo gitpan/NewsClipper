@@ -47,3 +47,10 @@ by handler writers.
 NewsClipper::Types: Contains type information used by Interpretor to check the
 validity of News Clipper command sequences. Also provides support for making
 new types.
+
+NewsClipper::Server: The superclass interface to the server. Actual
+implementations for talking to the server derive from this
+
+NewsClipper::Server::CGI: A CGI interface to the handler server
+
+NewsClipper::Server::MySQL: A MySQL interface to the handler server

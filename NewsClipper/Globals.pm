@@ -10,9 +10,9 @@ use Exporter;
 use vars qw( @ISA @EXPORT $VERSION );
 
 @ISA = qw( Exporter );
-@EXPORT = qw( DEBUG reformat dprint dequote %errors %config %opts);
+@EXPORT = qw( DEBUG reformat dprint lprint dequote %errors %config %opts);
 
-$VERSION = 0.22;
+$VERSION = 0.30;
 
 # ------------------------------------------------------------------------------
 
@@ -104,6 +104,59 @@ sub reformat(@)
 
 # ------------------------------------------------------------------------------
 
+use Log::Agent;
+use Log::Agent::Driver::File;
+use Log::Agent::Rotate;
+
+my $_driver;
+
+# Initialize the log files if they haven't been initialized already.
+
+sub _Initialize_Log_Files
+{
+  return if defined $_driver;
+
+  my $rotate = Log::Agent::Rotate->make(
+    -backlog   => $main::config{'max_number_of_log_files'},
+    -max_size => $main::config{'max_log_file_size'},
+    -is_alone  => 1,
+  );
+
+  my ($error_channel_setup,$debug_channel_setup);
+
+  # Handle non-rotating special output files
+  if ($main::config{'run_log_file'} =~ /^(STDERR|STDOUT)$/)
+  {
+    $error_channel_setup = ">&$main::config{'run_log_file'}";
+  }
+  else
+  {
+    $error_channel_setup = [$main::config{'run_log_file'}, $rotate];
+  }
+
+  if ($main::config{'debug_log_file'} =~ /^(STDERR|STDOUT)$/)
+  {
+    $debug_channel_setup = ">&$main::config{'debug_log_file'}";
+  }
+  else
+  {
+    $debug_channel_setup = [$main::config{'debug_log_file'}, $rotate];
+  }
+
+  $_driver = Log::Agent::Driver::File->make(
+    -channels => {
+      'error'  => $error_channel_setup,
+      'debug'  => $debug_channel_setup,
+    },
+    -stampfmt => 'none',
+    -magic_open => 1,
+  );
+
+  logconfig(-driver => $_driver, -debug => 10);
+}
+
+# ------------------------------------------------------------------------------
+
 # Prints debug messages in the form "<!--DEBUG: ... -->" if the DEBUG constant
 # is true.
 
@@ -113,10 +166,30 @@ sub dprint(@)
 
   my $message = join '',@_;
 
+  _Initialize_Log_Files();
+
   my @lines = split /\n/, $message;
   foreach my $line (@lines)
   {
-    printf "<!--DEBUG: %-64s -->\n",$line;
+    logdbg(1,$line);
+  }
+
+  return 1;
+}
+
+# ------------------------------------------------------------------------------
+
+# Logs messages to the logfile.
+sub lprint(@)
+{
+  my $message = join '',@_;
+
+  _Initialize_Log_Files();
+
+  my @lines = split /\n/, $message;
+  foreach my $line (@lines)
+  {
+    logerr($line);
   }
 
   return 1;

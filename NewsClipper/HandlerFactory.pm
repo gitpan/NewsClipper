@@ -12,11 +12,10 @@ use LWP::UserAgent;
 use File::Path;
 # For find
 use File::Find;
-use DBI;
 
 use vars qw( $VERSION );
 
-$VERSION = 0.88;
+$VERSION = 0.89;
 
 use NewsClipper::Globals;
 
@@ -956,7 +955,7 @@ sub _DownloadHandler($$)
   {
     my ($subDir) = $code =~ /package NewsClipper::Handler::([^:]*)::/;
     $destDirectory =
-      "$config{handlerlocations}[0]/NewsClipper/Handler/$subDir";
+      "$config{handler_locations}[0]/NewsClipper/Handler/$subDir";
 
     dprint "Saving new handler to $destDirectory";
   }
@@ -1057,15 +1056,17 @@ sub ConnectToDB
 {
   return $dbh if defined $dbh;
 
+  require DBI;
+
   local $SIG{ALRM} = sub { die "database timeout" };
 
-  my $numTriesLeft = $config{socketTries};
+  my $numTriesLeft = $config{socket_tries};
 
   do
   {
     eval
     {
-      alarm($config{socketTries});
+      alarm($config{socket_tries});
 
       $dbh = DBI->connect('DBI:mysql:handlers:handlers.newsclipper.com','webuser')
         || die "Can't connect to database: $DBI::errstr";
@@ -1177,18 +1178,15 @@ sub _GetNewHandlerVersion($$)
   # regardless of functional compatibility.
   my $localVersion = _GetLocalHandlerVersion($handler_name);
 
-dprint "LocalVersion:$localVersion" if defined $localVersion;
 
   ConnectToDB();
 
   unless (defined $dbh)
   {
-dprint "Connect failed";
     $alreadyFailed = 1;
     return 'failed';
   }
 
-dprint "Connect succeeded";
   unless (defined _GetLatestWorkingHandlerVersion($handler_name,$COMPATIBLE_NEWS_CLIPPER_VERSION))
   {
     dprint "Server reports that handler \"$handler_name\" doesn't exist.\n";
@@ -1201,12 +1199,10 @@ dprint "Connect succeeded";
   {
     $newVersion = _GetCompatibleWorkingHandlerVersion($handler_name,
       $COMPATIBLE_NEWS_CLIPPER_VERSION, $localVersion);
-dprint "_GetCompatibleWorkingHandlerVersion got: $newVersion";
   }
   else
   {
     $newVersion = _GetLatestWorkingHandlerVersion($handler_name,$COMPATIBLE_NEWS_CLIPPER_VERSION);
-dprint "_GetLatestWorkingHandlerVersion got: $newVersion";
   }
 
   if (!defined $newVersion ||
@@ -1255,7 +1251,7 @@ sub _DownloadURL($)
   dprint "Downloading URL:";
   dprint "  $url";
 
-  $userAgent->timeout($config{socketTimeout});
+  $userAgent->timeout($config{socket_timeout});
   $userAgent->proxy(['http', 'ftp'], $config{proxy})
     if $config{proxy} ne '';
   my $request = new HTTP::Request GET => "$url";
@@ -1266,7 +1262,7 @@ sub _DownloadURL($)
   }
 
   my $result;
-  my $numTriesLeft = $config{socketTries};
+  my $numTriesLeft = $config{socket_tries};
 
   do
   {
@@ -1287,8 +1283,6 @@ sub _DownloadURL($)
 END
 {
   DisconnectFromDB();
-
-dprint "disconnected";
 }
 
 1;

@@ -1,3 +1,47 @@
+New in version 1.30:
+- Fixed a bug in detection of incompatible configuration file.
+- Removed cacheimages option processing code from NewsClipper.pl, and put it
+  in the cacheimages handler.
+- Added DBI and DBD::mysql module requirements to Makefile.PL. (Forgot to add
+  them in version 1.28)
+- "Server is down" warning is now shown only once for each run.
+- Fixed a bugs in handler server connect timeouts and retries.
+- -C now also gives the option to clear the debug and run logs.
+- Direct database connections are now used only if DBI and DBD::mysql are
+  available. Otherwise, the older (and slower) web-based connections are used.
+- Fixed unhelpful warning when invalid handler names are used.
+- Added support for emailing output files (Thanks to Lee Adler
+  <appraiser@flinet.com> for the suggestion)
+- Mail::Sendmail is now required if you use the email feature.
+
+New in version 1.29:
+- The Log::Agent and Log::Agent::Rotate packages are now required
+- Debug information is now sent to a log file determined by the debug_log_file
+  configuration parameter.
+- Information about the execution of News Clipper is stored in the file
+  determined by the run_log_file configuration parameter.
+- Errors are now saved in the run log, which prevents private information
+  about the News Clipper commands from being printed in the HTML comments. (An
+  HTML message tells you to look in the log file.)
+- New "lprint" function can be used within handlers to print to the run log.
+- The new max_number_of_log_files and max_log_file_size configuration
+  parameters control the rotation of log files.
+- "tagText" configuration value allows users to set the comment keyword that
+  indicates News Clipper commands
+- "makeOutputFilesExecutable" configuration value allows users to set whether
+  or not the output files should be made executable
+- ConvertConfig.pl now saves updated config files even if a .bak file already
+  exists. New backups are saved as .bak2, .bak3. etc.
+- The amount of time to hold a lock and the amount of time to wait for a lock
+  are now based on the scriptTimeout value.
+- Updated Makefile.PL to use Win32::TieRegistry instead of older
+  Win32::Registry.
+- Makefile.PL now determines old installation directory for single-user
+  installations.
+- Fixed a use of unitialized value warning in HandlerFactory.pm.
+- Standardized config options to use_this_style instead of thisStyle or
+  thisstyle.
+
 New in version 1.28:
 - New handler check now uses direct database connection instead of CGI
   scripts. (Five times faster)

@@ -31,5 +31,6 @@ NewsClipper/TagParser.pm              News Clipper's parser for
 NewsClipper/Interpreter.pm            Executes News Clipper commands
 NewsClipper/Types.pm                  Contains built-in type information, as
                                         well as support for making new types.
-File/Cache.pm                         A custom version of the File::Cache
-                                        module
+NewsClipper/Server.pm                 Server base class
+NewsClipper/Server/MySQL.pm           MySQL interface to the handler server
+NewsClipper/Server/CGI.pm             CGI interface to the handler server

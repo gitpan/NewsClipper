@@ -33,6 +33,7 @@ use vars qw( %config %opts $VERSION $COMPATIBLE_CONFIG_VERSION $lock_manager );
 # these until NewsClipper::Globals has been imported!
 sub DEBUG();
 sub dprint(@);
+sub lprint(@);
 sub reformat(@);
 sub dequote($;$);
 
@@ -40,10 +41,10 @@ sub dequote($;$);
 use vars qw(&dprint &reformat &dequote);
 
 # The version of the script
-$VERSION = do {my @r=(q$ 1.2.8 $=~/\d+/g);sprintf"%d."."%1d"x$#r,@r};
+$VERSION = do {my @r=(q$ 1.3.0 $=~/\d+/g);sprintf"%d."."%1d"x$#r,@r};
 
 # The version of configuration file that this version of News Clipper can use.
-$COMPATIBLE_CONFIG_VERSION = 1.21;
+$COMPATIBLE_CONFIG_VERSION = 1.30;
 
 # ------------------------------ MAIN PROGRAM ---------------------------------
 
@@ -62,10 +63,15 @@ sub PrintDebugSummary(\@);
   SetupConfig();
 
   PrintDebugSummary(@startingINC);
+
+  $config{start_time} = scalar localtime time;
+
+  lprint "--------------------------------------------------------------------";
+  lprint "News Clipper $VERSION started: $config{start_time}";
 }
 
 # Print the usage if the -h flag was used
-print_usage() && exit(0) if $opts{h};
+print_usage() && exit if $opts{h};
 
 # Set up the lockfile. SetupConfig() above created .NewsClipper, so we can
 # lock on that. This feature can not be used in Windows because it doesn't
@@ -75,6 +81,8 @@ unless (($^O eq 'MSWin32') || ($^O eq 'dos'))
   require LockFile::Simple;
   $lock_manager = LockFile::Simple->make('-autoclean' => 1, '-nfs' => 1,
     '-stale' => 1, '-warn' => 0, '-wfunc' => undef, '-efunc' => undef,
+    '-hold' => $config{script_timeout} + 10,
+    '-max' => 2 * ($config{script_timeout} + 10),
     '-format' => "$NewsClipper::Globals::home/.NewsClipper/lock");
   $lock_manager->lock("$NewsClipper::Globals::home/.NewsClipper")
     or die reformat dequote<<"    EOF";
@@ -108,7 +116,7 @@ else
 
   eval
   {
-    alarm($config{scriptTimeout});
+    alarm($config{script_timeout});
     if ($opts{e})
     {
       ProcessFlagCommand();
@@ -134,7 +142,8 @@ else
       # and print the error. (I'm not simply die'ing here because I don't like
       # the annoying ...propagated message. I don't know if this is the right
       # way to do this, but it works.)
-      print STDERR $@;
+      warn $@;
+      lprint $@;
       $exit_value = 1;
     }
   }
@@ -143,7 +152,7 @@ else
 $lock_manager->unlock("$NewsClipper::Globals::home/.NewsClipper")
   if defined $lock_manager;
 
-exit $exit_value;
+exit($exit_value);
 
 #------------------------------------------------------------------------------
 
@@ -156,28 +165,29 @@ sub ProcessFiles()
   # Make unbuffered for easier debugging.
   $| = 1 if DEBUG;
 
-  for (my $i=0;$i <= $#{$config{inputFiles}};$i++)
+  for (my $i=0;$i <= $#{$config{input_files}};$i++)
   {
-    dprint "Now processing $config{inputFiles}[$i] => $config{outputFiles}[$i]";
+    dprint "Now processing $config{input_files}[$i] => $config{output_files}[$i]";
+    lprint "Processing $config{input_files}[$i] => $config{output_files}[$i]";
 
     # Print a warning and skip if the file doesn't exist and isn't a text file.
     # However, don't do the checks if the file is STDIN.
-    unless ($config{inputFiles}[$i] eq 'STDIN')
+    unless ($config{input_files}[$i] eq 'STDIN')
     {
-      warn reformat "Input file $config{inputFiles}[$i] can't be found.\n"
-        and next unless -e $config{inputFiles}[$i];
-      warn reformat "Input file $config{inputFiles}[$i] is a directory.\n"
-        and next if -d $config{inputFiles}[$i];
-      warn reformat "Input file $config{inputFiles}[$i] is empty.\n"
-        and next if -z $config{inputFiles}[$i];
+      warn reformat "Input file $config{input_files}[$i] can't be found.\n"
+        and next unless -e $config{input_files}[$i];
+      warn reformat "Input file $config{input_files}[$i] is a directory.\n"
+        and next if -d $config{input_files}[$i];
+      warn reformat "Input file $config{input_files}[$i] is empty.\n"
+        and next if -z $config{input_files}[$i];
     }
 
     # We'll write to the file unless we're in DEBUG mode.
     my $writeToFile = 1;
     $writeToFile = 0
-      if DEBUG || $config{outputFiles}[$i] eq 'STDOUT';
+      if DEBUG || $config{output_files}[$i] eq 'STDOUT';
 
-    $config{inputFiles}[$i] = *STDIN if $config{inputFiles}[$i] eq 'STDIN';
+    $config{input_files}[$i] = *STDIN if $config{input_files}[$i] eq 'STDIN';
 
     my $oldSTDOUT = new FileHandle;
 
@@ -193,18 +203,18 @@ sub ProcessFiles()
       {
         # Make unbuffered
         $| = 2;
-        open (STDOUT,"| tee $config{outputFiles}[$i].temp") 
+        open (STDOUT,"| tee $config{output_files}[$i].temp") 
           or die reformat dequote<<"          EOF";
             Couldn't create temporary output file
-            $config{outputFiles}[$i].temp using "tee": $!
+            $config{output_files}[$i].temp using "tee": $!
           EOF
       }
       else
       {
-        open (STDOUT,">$config{outputFiles}[$i].temp")
+        open (STDOUT,">$config{output_files}[$i].temp")
           or die reformat dequote<<"          EOF";
             Couldn't create temporary output file
-            $config{outputFiles}[$i].temp: $!
+            $config{output_files}[$i].temp: $!
           EOF
       }
     }
@@ -215,7 +225,7 @@ sub ProcessFiles()
     # whenever a special tag is seen.
 
     my $p = new NewsClipper::Parser;
-    $p->parse_file($config{inputFiles}[$i]);
+    $p->parse_file($config{input_files}[$i]);
 
     # Restore STDOUT to the way it was
     if ($writeToFile)
@@ -226,17 +236,28 @@ sub ProcessFiles()
 
       # Replace the output file with the temp file. Move it to .del for OSes
       # that have delayed deletes.
-      unlink ("$config{outputFiles}[$i].del");
-      rename ($config{outputFiles}[$i], "$config{outputFiles}[$i].del");
-      rename ("$config{outputFiles}[$i].temp",$config{outputFiles}[$i])
-        or die "Could not rename $config{outputFiles}[$i].temp " .
-          "to $config{outputFiles}[$i]: $!";
-      unlink ("$config{outputFiles}[$i].del");
-      chmod 0755, $config{outputFiles}[$i];
+      unlink ("$config{output_files}[$i].del");
+      rename ($config{output_files}[$i], "$config{output_files}[$i].del");
+      rename ("$config{output_files}[$i].temp",$config{output_files}[$i])
+        or die "Could not rename $config{output_files}[$i].temp " .
+          "to $config{output_files}[$i]: $!";
+      unlink ("$config{output_files}[$i].del");
 
-      FTP_File($config{outputFiles}[$i],$config{ftpFiles}[$i])
-        if defined $config{ftpFiles}[$i] &&
-           exists $config{ftpFiles}[$i]{server};
+      if ($config{make_output_files_executable} =~ /^y/i)
+      {
+        chmod 0755, $config{output_files}[$i];
+      }
+      else
+      {
+        chmod 0644, $config{output_files}[$i];
+      }
+
+      FTP_File($config{output_files}[$i],$config{ftp_files}[$i])
+        if defined $config{ftp_files}[$i] &&
+           exists $config{ftp_files}[$i]{server};
+
+      Email_File($config{output_files}[$i],$config{email_files}[$i])
+        if defined $config{email_files}[$i];
     }
   }
 }
@@ -253,6 +274,7 @@ sub ProcessFlagCommand()
   $| = 1 if DEBUG;
 
   dprint "Now processing handler \"$opts{e}\" => STDOUT";
+  lprint "Processing handler \"$opts{e}\" => STDOUT";
 
   my $oldSTDOUT = new FileHandle;
 
@@ -308,16 +330,17 @@ sub FTP_File()
   my %ftp_info = %{shift @_};
 
   dprint "FTP'ing file $filename to server $ftp_info{server}";
+  lprint "FTP'ing file $filename to server $ftp_info{server}";
 
   use Net::FTP;
 
-  my $numTriesLeft = $config{socketTries};
+  my $numTriesLeft = $config{socket_tries};
 
   my $ftp;    
 
   do
   {
-    $ftp = Net::FTP->new($ftp_info{server},Timeout => $config{socketTimeout});
+    $ftp = Net::FTP->new($ftp_info{server},Timeout => $config{socket_timeout});
   } until ($numTriesLeft == 0 || $ftp);
 
   unless ($ftp)
@@ -353,6 +376,43 @@ sub FTP_File()
 
 # ------------------------------------------------------------------------------
 
+# Send the file to an email address. Prints and error to STDERR and returns 0
+# if something goes wrong. Returns 1 otherwise.
+
+sub Email_File()
+{
+  my $filename = shift;
+  my %email_info = %{ shift @_ };
+
+  dprint "Emailing file $filename to $email_info{To}";
+  lprint "Emailing file $filename to $email_info{To}";
+
+  open HTML,$filename;
+  my $message = join '', <HTML>;
+  close HTML;
+
+  $email_info{'content-type'} = 'text/html; charset="iso-8859-1"'
+    unless defined $email_info{'content-type'};
+
+  $email_info{'body'} = $message;
+
+  require Mail::Sendmail;
+
+  unless (Mail::Sendmail::sendmail(%email_info))
+  {
+    warn "Could not send email: $Mail::Sendmail::error";
+
+    # To shut up the warning
+    { my $dummy = $Mail::Sendmail::error; }
+
+    return 0;
+  }
+
+  return 1;
+}
+
+# ------------------------------------------------------------------------------
+
 sub get_exe_name
 {
   my $exe_name = $0;
@@ -374,16 +434,17 @@ sub print_usage()
 
   if ($config{product} eq "Personal")
   {
-    $version .= " ($config{numberpages} page";
-    $version .= "s" if $config{numberpages} > 1;
-    $version .= ", $config{numberhandlers} handlers)";
+    $version .= " ($config{number_pages} page";
+    $version .= "s" if $config{number_pages} > 1;
+    $version .= ", $config{number_handlers} handlers)";
   }
 
   print dequote<<"  EOF";
     This is News Clipper version $version
 
-    usage: $exeName [-adnrvC] [-i inputfile] [-o outputfile]
-           [-c configfile] [-e command] [-H path]
+    usage: $exeName [-adnrvPC] [-i inputfile] [-o outputfile]
+           [-c configfile] [-H homepath]
+           [-e command,command,...] [command,command,...]
 
     -i The template file to use as input (overrides value in configuration file)
     -o The output file (overrides value in configuration file)
@@ -402,6 +463,28 @@ sub print_usage()
 
 # ------------------------------------------------------------------------------
 
+use File::Spec::Functions qw(splitdir catdir);
+
+# Find the parent directory of a directory. Returns undef if there is no
+# parent
+
+sub _Get_Parent_Directory
+{
+  my ($directory) = @_;
+
+  defined($directory) or
+    die("directory required");
+
+  my @directories = splitdir($directory);
+  pop @directories;
+
+  return undef unless @directories;
+
+  return catdir(@directories);
+}
+
+# ------------------------------------------------------------------------------
+
 # Calls LoadSysConfig and LoadUserConfig to load the system-wide and user
 # configuration information.  It then tweaks a few of the configuration
 # parameters and loads the News Clipper global functions and constants. Then
@@ -412,63 +495,39 @@ sub SetupConfig()
 {
   SetupSSI();
 
-  {
-    # Get the command line flags. Localize @ARGV since getopt destroys it. We
-    # do this before loading the configuration in order to get the -c flag.
-    local @ARGV = @ARGV;
-    Getopt::Long::Configure(
-      qw(bundling noignore_case auto_abbrev prefix_pattern=-));
-    GetOptions(\%opts, qw(i:s o:s c:s e:s a h d n r v P C H:s));
-
-    # Treat left-over arguments as -e arguments.
-    my $joined_args = join ",",@ARGV;
-    @ARGV = ('-e',$joined_args);
-    my %extra_opts;
-    GetOptions(\%extra_opts, qw(i:s o:s c:s e:s a h d n r v P C H:s));
-
-    if (defined $opts{e})
-    {
-      $opts{e} .= ",$extra_opts{e}";
-    }
-    else
-    {
-      $opts{e} = $extra_opts{e};
-    }
-  }
+  ProcessFlags();
 
   # We load the configuration, being careful not to use any of the stuff in
   # NewsClipper::Globals. (Like dprint, for example.)
   LoadConfigFiles();
 
-  # Translate the cache size into bytes from megabytes, and the maximum image
-  # age into seconds from days.
-  $config{maxcachesize} = $config{maxcachesize}*1048576
-    if defined $config{maxcachesize};
-  $config{maximgcacheage} = $config{maximgcacheage}*86400
-    if defined $config{maxcacheage};
+  ValidateConfigFiles();
+
+  # Translate the cache size into bytes from megabytes
+  $config{max_cache_size} *= 1048576 if defined $config{max_cache_size};
 
   # Put the handler locations on the include search path
-  foreach my $dir (@{$config{handlerlocations}})
+  foreach my $dir (@{$config{handler_locations}})
   {
-    unshift @INC,@{$config{handlerlocations}} if -d $dir;
+    unshift @INC,@{$config{handler_locations}} if -d $dir;
   }
 
   # Override the config values if the user specified -i or -o.
-  $config{inputFiles} = [$opts{i}] if defined $opts{i};
-  $config{outputFiles} = [$opts{o}] if defined $opts{o};
+  $config{input_files} = [$opts{i}] if defined $opts{i};
+  $config{output_files} = [$opts{o}] if defined $opts{o};
 
   # This should be in ValidateSetup, but we need to check it before slurping
-  # in the NewsClipper::Globals. (We don't need modulepath in the compiled
+  # in the NewsClipper::Globals. (We don't need module_path in the compiled
   # version.)
-  foreach my $directory (split /\s+/,$config{modulepath})
+  foreach my $directory (split /\s+/,$config{module_path})
   {
-    die "\"$directory\" in modulepath setting of NewsClipper.cfg must be a directory.\n"
+    die "\"$directory\" in module_path setting of NewsClipper.cfg must be a directory.\n"
       unless -d $directory;
   }
 
   # Put the News Clipper module file location on @INC
-  unshift @INC,split(/\s+/,$config{modulepath})
-    if defined $config{modulepath} && $config{modulepath} ne '';
+  unshift @INC,split(/\s+/,$config{module_path})
+    if defined $config{module_path} && $config{module_path} ne '';
 
   # Now we slurp in the global functions and constants.
   require NewsClipper::Globals;
@@ -479,6 +538,15 @@ sub SetupConfig()
   # Make the .NewsClipper directory if it doesn't exist already.
   mkdir "$NewsClipper::Globals::home/.NewsClipper", 0700
     unless -e "$NewsClipper::Globals::home/.NewsClipper";
+
+  # Make the logfile directories if they don't exist already.
+  {
+    use File::Path;
+    my $debug_log_directory = _Get_Parent_Directory($config{'debug_log_file'});
+    my $run_log_directory = _Get_Parent_Directory($config{'run_log_file'});
+    mkpath $debug_log_directory unless -e $debug_log_directory;
+    mkpath $run_log_directory unless -e $run_log_directory;
+  }
 
   # Initialize the HTML cache, News Clipper state, and handler factory
   require NewsClipper::Cache;
@@ -519,6 +587,37 @@ sub SetupSSI()
 
   # First, we redirect STDERR to STDOUT so errors go to the browser.
   open(STDERR,">&STDOUT");
+}
+
+# ------------------------------------------------------------------------------
+
+sub ProcessFlags
+{
+  # Get the command line flags. Localize @ARGV since getopt destroys it. We
+  # do this before loading the configuration in order to get the -c flag.
+  local @ARGV = @ARGV;
+  Getopt::Long::Configure(
+    qw(bundling noignore_case auto_abbrev prefix_pattern=-));
+  GetOptions(\%opts, qw(i:s o:s c:s e:s a h d n r v P C H:s));
+
+  # Treat left-over arguments as -e arguments.
+  if (@ARGV)
+  {
+    my $joined_args = join ",",@ARGV;
+    @ARGV = ('-e',$joined_args);
+  }
+
+  my %extra_opts;
+  GetOptions(\%extra_opts, qw(i:s o:s c:s e:s a h d n r v P C H:s));
+
+  if (defined $opts{e})
+  {
+    $opts{e} .= ",$extra_opts{e}" if defined $extra_opts{e};
+  }
+  else
+  {
+    $opts{e} = $extra_opts{e} if defined $extra_opts{e};
+  }
 }
 
 # ------------------------------------------------------------------------------
@@ -820,10 +919,7 @@ variable.
 
 # ------------------------------------------------------------------------------
 
-# Checks the setup (system-wide modified by user's) to make sure everything is
-# okay.
-
-sub ValidateSetup()
+sub ValidateConfigFiles
 {
   die <<"  EOF"
 Could not find either a system-wide configuration file or a personal
@@ -832,26 +928,34 @@ configuration file.
     if $config{sysconfigfile} eq 'Not specified' &&
        $config{userconfigfile} eq 'Not found';
 
-  if (!defined $config{forNewsClipperVersion} ||
-      ($config{forNewsClipperVersion} < $COMPATIBLE_CONFIG_VERSION))
+  if (!defined $config{for_news_clipper_version} ||
+      ($config{for_news_clipper_version} < $COMPATIBLE_CONFIG_VERSION))
   {
-    my $version_string = $config{forNewsClipperVersion};
+    my $version_string = $config{for_news_clipper_version};
     $version_string = 'pre-1.21' unless defined $version_string;
 
-    die reformat dequote<<"    EOF";
-      Your NewsClipper.cfg configuration file is incompatible with this
-      version of News Clipper (need $COMPATIBLE_CONFIG_VERSION, have
-      $version_string). Please run "ConvertConfig /path/NewsClipper.cfg"
-      using the ConvertConfig that came with this distribution.
+    die <<"    EOF";
+Your NewsClipper.cfg configuration file is incompatible with this
+version of News Clipper (need $COMPATIBLE_CONFIG_VERSION, have $version_string).
+Please run "ConvertConfig /path/NewsClipper.cfg" using the ConvertConfig that
+came with this distribution of News Clipper.
     EOF
   }
+}
 
-  die "\"handlerlocations\" in NewsClipper.cfg must be non-empty.\n"
-    if $#{$config{handlerlocations}} == -1;
+# ------------------------------------------------------------------------------
 
-  foreach my $dir (@{$config{handlerlocations}})
+# Checks the setup (system-wide modified by user's) to make sure everything is
+# okay.
+
+sub ValidateSetup()
+{
+  die "\"handler_locations\" in NewsClipper.cfg must be non-empty.\n"
+    if $#{$config{handler_locations}} == -1;
+
+  foreach my $dir (@{$config{handler_locations}})
   {
-    die "\"$dir\" from handlerlocations in NewsClipper.cfg is not ".
+    die "\"$dir\" from handler_locations in NewsClipper.cfg is not ".
       "a directory.\n" unless -d $dir;
   }
 
@@ -871,7 +975,7 @@ configuration file.
   }
 
   # Check that the input files and output files match
-  if ($#{$config{inputFiles}} != $#{$config{outputFiles}})
+  if ($#{$config{input_files}} != $#{$config{output_files}})
   {
     die reformat dequote <<"    EOF";
       Your input and output files are not correctly specified. Check your
@@ -879,9 +983,9 @@ configuration file.
     EOF
   }
 
-  # Check that if the user is using ftpFiles, the number matches
-  if ($#{$config{ftpFiles}} != -1 &&
-      $#{$config{ftpFiles}} != $#{$config{outputFiles}})
+  # Check that if the user is using ftp_files, the number matches
+  if ($#{$config{ftp_files}} != -1 &&
+      $#{$config{ftp_files}} != $#{$config{output_files}})
   {
     die reformat dequote <<"    EOF";
       Your ftp information is not correctly specified. If you do not want to
@@ -893,7 +997,7 @@ configuration file.
 
   # Check that the user isn't trying to process more than one input file for
   # the Trial version
-  if ($#{$config{inputFiles}} > 0 && $config{product} eq "Trial")
+  if ($#{$config{input_files}} > 0 && $config{product} eq "Trial")
   {
     die reformat dequote <<"    EOF";
       Sorry, but the Trial version of News Clipper can only process one input
@@ -904,27 +1008,27 @@ configuration file.
   # Check that the user isn't trying to process more than the registered
   # number of files for the Personal version
   if ($config{product} eq "Personal" &&
-      $#{$config{inputFiles}}+1 > $config{numberpages} )
+      $#{$config{input_files}}+1 > $config{number_pages} )
   {
     die reformat dequote<<"    EOF";
       Sorry, but this Personal version of News Clipper is only registered to
-      process $config{numberpages} input files.
+      process $config{number_pages} input files.
     EOF
   }
 
-  die "No input files specified.\n" if $#{$config{inputFiles}} == -1;
+  die "No input files specified.\n" if $#{$config{input_files}} == -1;
 
-  # Check that they specified cachelocation and maxcachesize
-  die "cachelocation not specified in NewsClipper.cfg\n"
-    unless defined $config{cachelocation} &&
-           $config{cachelocation} ne '';
-  die "maxcachesize not specified in NewsClipper.cfg\n"
-    unless defined $config{maxcachesize} &&
-           $config{maxcachesize} != 0;
+  # Check that they specified cache_location and max_cache_size
+  die "cache_location not specified in NewsClipper.cfg\n"
+    unless defined $config{cache_location} &&
+           $config{cache_location} ne '';
+  die "max_cache_size not specified in NewsClipper.cfg\n"
+    unless defined $config{max_cache_size} &&
+           $config{max_cache_size} != 0;
 
-  # Check sockettries, and set it if necessary
-  $config{socketTries} = 1 unless defined $config{socketTries};
-  die "socketTries must be 1 or more\n" unless $config{socketTries} > 0;
+  # Check socket_tries, and set it if necessary
+  $config{socket_tries} = 1 unless defined $config{socket_tries};
+  die "socket_tries must be 1 or more\n" unless $config{socket_tries} > 0;
 }
 
 # ------------------------------------------------------------------------------
@@ -977,25 +1081,66 @@ sub PrintDebugSummary(\@)
   }
 
   dprint "Configuration is:";
-  while (my ($k,$v) = each %config)
+
+  DumpData(\%config,'  ');
+}
+
+# ------------------------------------------------------------------------------
+
+# Recursively outputs a data structure, with indentation. First argument is
+# a ref to the data, and the second argument is the prefix to append to the
+# output.
+
+sub DumpData
+{
+  my $data = shift;
+  my $prefix = shift;
+
+  if (!defined $data)
   {
-    my $keyVal = "  $k:\n";
-    if (ref $v eq 'ARRAY')
+    dprint "$prefix<NOT SPECIFIED>\n";
+  }
+  elsif (!ref $data)
+  {
+    if (defined $data && $data ne '')
     {
-      grep { $keyVal .= "    $_\n" } @$v;
+      dprint "$prefix$data\n";
     }
     else
     {
-      if (defined $v && $v ne '')
-      {
-        $keyVal .= "    $v\n";
-      }
-      else
-      {
-        $keyVal .= "    <NOT SPECIFIED>\n";
-      }
+      dprint "$prefix<NOT SPECIFIED>\n";
     }
-    dprint $keyVal;
+  }
+  elsif (UNIVERSAL::isa($data,'SCALAR'))
+  {
+    if (defined $$data && $$data ne '')
+    {
+      dprint "$prefix$$data\n";
+    }
+    else
+    {
+      dprint "$prefix<NOT SPECIFIED>\n";
+    }
+  }
+  elsif (UNIVERSAL::isa($data,'ARRAY'))
+  {
+    foreach my $temp (@$data)
+    {
+      DumpData($temp,$prefix);
+    }
+  }
+  elsif (UNIVERSAL::isa($data,'HASH'))
+  {
+    foreach my $temp (keys %$data)
+    {
+      dprint "$prefix$temp:";
+      DumpData($$data{$temp},"$prefix  ");
+    }
+  }
+  else
+  {
+print STDERR "6\n";
+    dprint "$prefix<UNKNOWN TYPE>\n";
   }
 }
 
@@ -1007,17 +1152,17 @@ sub CheckRegistration()
 {
   # Set the default product type
   $config{product} = "Trial";
-  $config{numberpages} = 1;
-  $config{numberhandlers} = 1;
+  $config{number_pages} = 1;
+  $config{number_handlers} = 1;
 
   # Override the product type in the Open Source version.
   $config{product} = "Open Source", return;
 
   # Extract the date, license type, and crypt'd code from the key
   my ($date,$license,$numPages,$numHandlers,$code) =
-    $config{regKey} =~ /^(.*?)#(.*?)#(.*?)#(.*)#(.*)$/;
+    $config{registration_key} =~ /^(.*?)#(.*?)#(.*?)#(.*)#(.*)$/;
 
-  # In case the regKey isn't valid
+  # In case the registration_key isn't valid
   $date = '' unless defined $date;
   $license = '' unless defined $license;
   $numPages = '' unless defined $numPages;
@@ -1038,8 +1183,8 @@ sub CheckRegistration()
     if ($license eq 'p')
     {
       $config{product} = "Personal";
-      $config{numberpages} = $numPages;
-      $config{numberhandlers} = $numHandlers;
+      $config{number_pages} = $numPages;
+      $config{number_handlers} = $numHandlers;
     }
 
     if ($license eq 'c')
@@ -1047,9 +1192,9 @@ sub CheckRegistration()
       $config{product} = "Corporate";
     }
   }
-  elsif ($config{regKey} ne 'YOUR_REG_KEY_HERE')
+  elsif ($config{registration_key} ne 'YOUR_REG_KEY_HERE')
   {
-    print STDERR reformat dequote<<"    EOF";
+    warn reformat dequote<<"    EOF";
       ERROR: Your registration key appears to be incorrect. Here is the
       information News Clipper was able to determine:
     EOF
@@ -1057,7 +1202,7 @@ sub CheckRegistration()
       System-wide configuration file: $config{sysconfigfile}
       Personal configuration file: $config{userconfigfile}
       Email: $config{email}
-      Key: $config{regKey}
+      Key: $config{registration_key}
       Operating System: $^O
       Date Issued: $date
       License Type: $license
@@ -1084,7 +1229,7 @@ sub HandleClearCache()
     my $response;
 
     # Clear HTML cache
-    print "Do you want to clear the News Clipper HTML cache? ";
+    print "Do you want to clear the HTML cache? ";
     $response = <STDIN>;
 
     while ($response !~ /^[yn]/i)
@@ -1095,7 +1240,7 @@ sub HandleClearCache()
 
     if ($response =~ /^y/i)
     {
-      rmtree (["$config{cachelocation}/html"]);
+      rmtree (["$config{cache_location}/html"]);
     }
 
     # Clear handler state
@@ -1131,7 +1276,39 @@ sub HandleClearCache()
       rmtree (["$NewsClipper::Globals::home/.NewsClipper/state/NewsClipper"]);
     }
 
-    exit;
+    # Clear debug log
+    print reformat "Do you want to clear the debug log? ";
+    $response = <STDIN>;
+
+    while ($response !~ /^[yn]/i)
+    {
+      print "Yes or no? ";
+      $response = <STDIN>;
+    }
+
+    if ($response =~ /^y/i)
+    {
+      open DEBUG_LOG, ">$config{'debug_log_file'}";
+      close DEBUG_LOG;
+    }
+
+    # Clear run log
+    print reformat "Do you want to clear the run log? ";
+    $response = <STDIN>;
+
+    while ($response !~ /^[yn]/i)
+    {
+      print "Yes or no? ";
+      $response = <STDIN>;
+    }
+
+    if ($response =~ /^y/i)
+    {
+      open DEBUG_LOG, ">$config{'run_log_file'}";
+      close DEBUG_LOG;
+    }
+
+    exit(0);
   }
 }
 
@@ -1221,12 +1398,26 @@ sub GetWinInstallDir()
 
 END
 {
-  if (defined &DEBUG && DEBUG)
+  # Only do this if we got far enough to define dprint and lprint;
+  if (defined &DEBUG)
   {
+    # Print the modules used to the debug log
     dprint "Here are all the modules used during this run, and their locations:";
     foreach my $key (sort keys %INC)
     {
       dprint "  $key =>\n    $INC{$key}";
+    }
+
+    # Print process completion status to the status and run logs
+    my $end_time = scalar localtime time;
+
+    if ($? == 0)
+    {
+      lprint "News Clipper completed normally: $end_time";
+    }
+    else
+    {
+      lprint "News Clipper completed but had an error: $end_time";
     }
   }
 
@@ -1333,8 +1524,8 @@ News Clipper has the ability to automatically download handlers whose
 functionality did not change relative to the currently installed version.
 This means that you can safely download the update and be guaranteed that it
 will not break your existing News Clipper commands.  These "bugfix updates"
-are controlled by the auto_dl_bugfix_updates value in the NewsClipper.cfg
-file.
+are controlled by the auto_download_bugfix_updates value in the
+NewsClipper.cfg file.
 
 You can also tell News Clipper to download "functional updates", which are
 handlers whose interface has changes relative to the version you have. These
@@ -1385,8 +1576,8 @@ Check for new bugfix and functional updates to any handlers encountered.
 =item B<-a>
 
 Automatically download any bugfix or functional updates to handlers News
-Clipper processes. Use the auto_dl_bugfix_updates in the configuration file
-to always download bugfix versions, but not functional updates. This flag
+Clipper processes. Use the auto_download_bugfix_updates in the configuration
+file to always download bugfix versions, but not functional updates. This flag
 should only be used when News Clipper is run interactively, since functional
 updates can break web pages that rely on the older functionality.
 
@@ -1437,7 +1628,7 @@ look for this file in the system-wide location specified by the NEWSCLIPPER
 environment variable. News Clipper will then load the user's NewsClipper.cfg
 from $home/.NewsClipper. Any options that appear in the personal configuration
 file override those in the system-wide configuration file, except for the
-modulepath option. In this file you can specify the following:
+module_path option. In this file you can specify the following:
 
 =over 2
 
@@ -1451,17 +1642,17 @@ platforms.)
 The user's email address. This is used for registration for the commercial
 version.
 
-=item regKey
+=item registration_key
 
 The registration key. This is used for registration for the commercial
 version.
 
-=item inputFiles, outputFiles
+=item input_files, output_files
 
 Multiple input and output files. The first input file is transformed into the
 first output file, the second input file to the second output file, etc.
 
-=item handlerlocations
+=item handler_locations
 
 The locations of handlers. For example, ['dir1','dir2'] would look for
 handlers in dir1/NewsClipper/Handler/ and dir2/NewsClipper/Handler/. Note that
@@ -1469,7 +1660,7 @@ while installing handlers, the first directory is used. This can be used to
 provide a location for a single repository of handlers, which can be shared
 by all users.
 
-=item modulepath
+=item module_path
 
 The location of News Clipper's modules, in case the aren't in the standard
 Perl module path. (Set during installation.) For pre-compiled versions of News
@@ -1477,32 +1668,64 @@ Clipper, this setting also includes extra directories, separated by
 whitespace, which are paths in which to search for any additional Perl
 modules.
 
-=item cachelocation
+=item cache_location
 
 The location of the cache in the file system.
 
-=item maxcachesize
+=item max_cache_size
 
 The maximum size of the cache in megabytes. It should be at least 5.
 
-=item scriptTimeout
+=item script_timeout
 
 The timeout value for the script. This puts a limit on the total time the
 script can execute, which prevents it from hanging. This does not work on
 Windows or DOS.
 
-=item socketTimeout
+=item socket_timeout
 
 The timeout value for socket connections. This allows the script to recover
 from unresponsive servers.
 
-=item socketTries
+=item socket_tries
 
 The number of times to try a connection before giving up.
 
 =item proxy
 
 Your proxy host. For example, "http://proxy.host.com:8080/"
+
+=item proxy_username
+
+=item proxy_password
+
+Your proxy username and password.
+
+=item auto_download_bugfix_updates
+
+Set to "yes" to automatically download bugfix updates to handlers.
+
+=item tag_text
+
+The keyword to indicate News Clipper commands. The default is "newsclipper",
+which results in <!-- newsclipper ... --> as the default command comment.
+
+=item make_output_files_executable
+
+Set to "yes" to make output files executable.
+
+=item debug_log_file
+
+=item run_log_file
+
+The file (with path) to which the debug and run logs should be appended.
+
+=item max_number_of_log_files
+
+=item max_log_file_size
+
+The maximum number of log files to maintain, and the maximum size of any log
+file.
 
 =back
 

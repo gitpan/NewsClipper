@@ -17,7 +17,7 @@ use vars qw( @ISA @EXPORT $VERSION );
 @ISA = qw( Exporter );
 @EXPORT = qw(GetUrl GetHtml GetImages GetLinks GetText);
 
-$VERSION = 0.66;
+$VERSION = 0.67;
 
 use NewsClipper::Globals;
 
@@ -76,7 +76,7 @@ sub GetUrl($)
   }
 
   # Otherwise we'll have to fetch it.
-  $userAgent->timeout($config{socketTimeout});
+  $userAgent->timeout($config{socket_timeout});
   $userAgent->proxy(['http', 'ftp'], $config{proxy})
     if $config{proxy} ne '';
   my $request = new HTTP::Request GET => "$url";
@@ -102,7 +102,7 @@ sub GetUrl($)
   }
 
   my $result;
-  my $numTriesLeft = $config{socketTries};
+  my $numTriesLeft = $config{socket_tries};
 
   do
   {
@@ -193,7 +193,7 @@ sub _GetLastModifiedTime
   my $old_timeout = $userAgent->timeout(5);
 
   my $result;
-  my $numTriesLeft = $config{socketTries};
+  my $numTriesLeft = $config{socket_tries};
 
   do
   {

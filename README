@@ -1,4 +1,4 @@
-News Clipper Version 1.28, Open Source
+News Clipper Version 1.30, Open Source
 http://newsclipper.sourceforge.net/
 
 News Clipper is an information integrator. It creates a custom web page from a
@@ -12,30 +12,21 @@ get you: technical support, a nice user's manual, pre-compiled binaries, and
 free upgrades for a year. Visit http://www.newsclipper.com/ for more
 information.
 
-New in version 1.28:
-- New handler check now uses direct database connection instead of CGI
-  scripts. (Five times faster)
-- The lockfile is now explicitly cleaned up. (May help prevent stale locks.)
-- Added -H flag to override home directory location
-- Modified -C flag to remove handler-specific state and News Clipper state,
-  and to exit immediately afterwards
-- Fixed a URL handling bug in ConvertHandler
-- Added check in ConvertHandler to suggest that RunHandler be used instead of
-  NewsClipper::HandlerFactory::Create
-- News Clipper should now only remove the old output file if the new one was
-  created successfully.
-- modulepath can now contain multiple paths separated by whitespace
-- Fixed a bug where a newly downloaded handler update would not reload
-  correctly.
-- StripAttributes bug fixed: now recognizes attributes with empty quotes like
-  alt=""
-- Arguments to News Clipper are now treated as -e commands. This allows
-  "NewsClipper slashdot" to be run to fetch and print slashdot headlines.
-- Debug output now correctly says the script name is "NewsClipper" instead of
-  "NewsClipper2" (on compiled versions)
-- Compiled versions now have the default @INC set in modulepath during
-  installation, allowing NC to find externally installed Perl modules.
-
+New in version 1.30:
+- Fixed a bug in detection of incompatible configuration file.
+- Removed cacheimages option processing code from NewsClipper.pl, and put it
+  in the cacheimages handler.
+- Added DBI and DBD::mysql module requirements to Makefile.PL. (Forgot to add
+  them in version 1.28)
+- "Server is down" warning is now shown only once for each run.
+- Fixed a bugs in handler server connect timeouts and retries.
+- -C now also gives the option to clear the debug and run logs.
+- Direct database connections are now used only if DBI and DBD::mysql are
+  available. Otherwise, the older (and slower) web-based connections are used.
+- Fixed unhelpful warning when invalid handler names are used.
+- Added support for emailing output files (Thanks to Lee Adler
+  <appraiser@flinet.com> for the suggestion)
+- Mail::Sendmail is now required if you use the email feature.
 
 See the file CHANGES for a complete change history.
 
@@ -83,6 +74,8 @@ PREREQUISITES
     File::Cache
     libwww
     LockFile::Simple
+    Log::Agent
+    Log::Agent::Rotate
   Be advised that these modules also require other modules:
     URI requires MIME::Base64
     HTML::Tree requires libwww and Font::AFM
@@ -107,7 +100,7 @@ PREREQUISITES
   Font-AFM-X.XX.tar.gz =>
     http://www.perl.com/CPAN/modules/by-module/Font/
   Digest-MD5-X.XX.tar.gz =>
-    http://www.perl.com/CPAN/modules/by-module/MD5/
+    http://www.perl.com/CPAN/modules/by-module/Digest/
   URI-X.XX.tar.gz =>
     http://www.perl.com/CPAN/modules/by-module/URI/
   HTML-Parser-X.XX.tar.gz =>
@@ -126,6 +119,12 @@ PREREQUISITES
     http://www.perl.com/CPAN/modules/by-module/File/
   LockFile-Simple-X.X.X.tar.gz =>
     http://www.perl.com/CPAN/modules/by-module/LockFile/
+  Log-Agent-X.X.X.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/Log/
+  Log-Agent-Rotate-X.X.X.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/Log/
+  Storable-X.X.X.tar.gz =>
+    http://www.perl.com/CPAN/modules/by-module/Storable/
 
 
 INSTALLATION

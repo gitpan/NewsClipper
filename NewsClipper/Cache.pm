@@ -14,7 +14,7 @@ use File::Cache;
 use vars qw( $VERSION @ISA );
 
 @ISA = qw(File::Cache);
-$VERSION = 0.34;
+$VERSION = 0.35;
 
 use NewsClipper::Globals;
 
@@ -24,12 +24,12 @@ sub new
 {
   my $proto = shift;
 
-  my $self = $proto->SUPER::new( { cache_key => $config{cachelocation},
+  my $self = $proto->SUPER::new( { cache_key => $config{cache_location},
                                    namespace => 'html',
                                    username => '',
                                    filemode => 0666,
                                    auto_remove_stale => 0,
-                                   max_size => $config{maxcachesize},
+                                   max_size => $config{max_cache_size},
                                    persistence_mechanism => 'Data::Dumper',
                                  });
 

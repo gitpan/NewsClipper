@@ -3,6 +3,7 @@
 
 use strict;
 use ExtUtils::MakeMaker;
+use vars qw( $Registry );
 
 require 5.004;
 
@@ -215,9 +216,11 @@ EOF
 
   print "=> [PST] ";
   $timezone = <STDIN>;
-  $timezone = "PST\n" if $timezone eq "\n";
   chomp $timezone;
+  $timezone = "PST" if $timezone eq '';
 
+
+  my $old_install_dir = Get_Old_Install_Directory();
 
   # Get the installation directory
   print "\n","-"x78,"\n";
@@ -225,11 +228,22 @@ EOF
 Where would you like to install News Clipper? Use / instead of \\, and don't
 use spaces.
 EOF
-  print "=> [C:/Program Files/NewsClipper] ";
-  $install_dir = <STDIN>;
-  chomp $install_dir;
-  $install_dir = "C:/Program Files/NewsClipper" if $install_dir eq '';
-  
+  if (defined $old_install_dir)
+  {
+    print "=> [$old_install_dir] ";
+    $install_dir = <STDIN>;
+    chomp $install_dir;
+    $install_dir = $old_install_dir if $install_dir eq '';
+  }
+  else
+  {
+    print "=> [C:/Program Files/NewsClipper] ";
+    $install_dir = <STDIN>;
+    chomp $install_dir;
+    $install_dir = "C:/Program Files/NewsClipper" if $install_dir eq '';
+  }
+
+  require Win32;
   $install_dir = Win32::GetShortPathName $install_dir;
   $install_dir =~ s/\0.*//;
 
@@ -263,6 +277,7 @@ Are you installing News Clipper as a [1] single user or [2] system-wide?
 EOF
 
   my $home = Get_Home_Directory();
+  my $old_install_dir = Get_Old_Install_Directory();
 
   print "=> [1] ";
   my $response = <STDIN>;
@@ -275,10 +290,20 @@ EOF
     print "\n","-"x78,"\n";
     print "Where would you like to install News Clipper?\n" .
       " (Subdirectories will be created for the binaries, documentation, etc.)\n";
-    print "=> [$home/NewsClipper] ";
-    $install_dir = <STDIN>;
-    chomp $install_dir;
-    $install_dir = "$home/NewsClipper" if $install_dir eq '';
+    if (defined $old_install_dir)
+    {
+      print "=> [$old_install_dir] ";
+      $install_dir = <STDIN>;
+      chomp $install_dir;
+      $install_dir = $old_install_dir if $install_dir eq '';
+    }
+    else
+    {
+      print "=> [$home/NewsClipper] ";
+      $install_dir = <STDIN>;
+      chomp $install_dir;
+      $install_dir = "$home/NewsClipper" if $install_dir eq '';
+    }
 
     print "\n","-"x78,"\n";
     print "Where would you like to install the man pages?\n";
@@ -365,6 +390,62 @@ home directory using both getpwuid and your HOME environment variable.
 
 # --------------------------------------------------------------------------
 
+# Figures out the user's old installation directory, or returns undef
+
+sub Get_Old_Install_Directory
+{
+  # On Windows we look in the registry
+  if (($^O eq 'dos') || ($^O eq 'MSWin32'))
+  {
+    require Win32::TieRegistry;
+    Win32::TieRegistry->import();
+
+    my $ncKey = $Registry->{"LMachine\\SOFTWARE\\Spinnaker Software\\News Clipper\\"};
+    my @versions = sort { $a <=> $b } keys(%$ncKey);
+    my $latest_version = pop @versions;
+
+    my $install_dir = $ncKey->{$latest_version}{"InstallDir"};
+
+    require Win32;
+    return Win32::GetLongPathName($install_dir);
+  }
+  # On Unix we check the modulepath in the config file
+  else
+  {
+    my $home = Get_Home_Directory();
+    my $code;
+
+    if (defined $ENV{NEWSCLIPPER})
+    {
+      open CFG, "$ENV{NEWSCLIPPER}/NewsClipper.cfg";
+      $code = join '', <CFG>;
+      close CFG;
+    }
+    else
+    {
+      open CFG, "$home/.NewsClipper/NewsClipper.cfg";
+      $code = join '', <CFG>;
+      close CFG;
+    }
+
+    my ($install_dir) = $code =~ /modulepath' => '([^'\s]+)/s;
+    $install_dir =~ s/\/lib$//;
+
+    # Only return the directory if it looks like it came from a user install
+    # instead of a system install.
+    if ($install_dir =~ /$home/)
+    {
+      return $install_dir;
+    }
+    else
+    {
+      return undef;
+    }
+  }
+}
+
+# --------------------------------------------------------------------------
+
 # Writes the user's installation directory into the Windows registry
 
 sub WriteRegistry
@@ -372,23 +453,20 @@ sub WriteRegistry
   my $install_dir = shift;
   my $VERSION = shift;
 
-  print "Writing Installation directory information to Windows registry...\n";
+  print "Writing Installation directory information to Windows registry...";
 
-  require Win32::Registry;
+  require Win32::TieRegistry;
+  Win32::TieRegistry->import();
 
-  my $key = "SOFTWARE\\Spinnaker Software\\News Clipper\\$VERSION";
-  my $TempKey;
-
-  $main::HKEY_LOCAL_MACHINE->Create($key, $TempKey) ||
-    die "Can't create key $key in registry.\n";
+  $Registry->{"LMachine\\SOFTWARE\\Spinnaker Software"} = {
+    "News Clipper" => {
+      $VERSION => {
+        "InstallDir" => $install_dir,
+      },
+    },
+  };
   
-  $main::HKEY_LOCAL_MACHINE->Open($key, $TempKey) ||
-    die "Can't find key $key in registry.\n";
-  
-  my ($class, $nSubKey, $nVals, $junk);
-  $TempKey->SetValueEx("install_dir", $junk, 1, $install_dir);
-
-  print "Done.\n";
+  print " Done.\n";
 }
 
 # --------------------------------------------------------------------------
@@ -457,14 +535,22 @@ sub Compute_Makefile_Attributes
             '$(INST_LIBDIR)/NewsClipper/TagParser.pm',
       },
       'EXE_FILES' => \@programs,
-      'PREREQ_PM' => { 'HTML::Parser' => 2.06, 'HTML::FormatText' => 0,
+      'PREREQ_PM' => { 'HTML::Parser' => 2.06,
+                       'HTML::FormatText' => 0,
                        'Time::ParseDate' => 0,
                        'Time::CTime' => 0,
                        'File::Cache' => 0.10,
                        'File::Spec' => 0.82,
-                       'HTML::TreeBuilder' => 0, 'URI' => 1.0, 'LWP' => 5.15,
+                       'HTML::TreeBuilder' => 0,
+                       'URI' => 1.0,
+                       'LWP' => 5.15,
                        'LockFile::Simple' => 0,
-                       'Storable' => 0},
+                       'Storable' => 0,
+                       'Log::Agent' => 0,
+                       'Log::Agent::Rotate' => 0,
+                       'Log::Agent::Driver::File' => 0,
+                       'DBI' => 0,
+                     },
     );
   }
 
@@ -509,13 +595,22 @@ sub MY::postamble
   # Unix version has binaries
   $convert_config .= '.pl' unless -d 'bin';
 
-  # Look for an old NewsClipper.cfg in ~/.NewsClipper
+  # Look for an old NewsClipper.cfg in ~/.NewsClipper. Update it instead of
+  # copying it
   my $home = Get_Home_Directory();
   if (-e "$home/.NewsClipper/NewsClipper.cfg")
   {
     $returnText .=<<"    EOF";
 	echo '  Updating $home/.NewsClipper/NewsClipper.cfg ...'; \\
 	\$(INSTALLSCRIPT)/$convert_config "$home/.NewsClipper/NewsClipper.cfg"; \\
+    EOF
+  }
+  elsif ($install_type eq 'user')
+  {
+    $returnText .=<<"    EOF";
+	echo '  Copying NewsClipper.cfg to $home/.NewsClipper ...'; \\
+	\$(PERL) -MExtUtils::Command -e mkpath "$home/.NewsClipper"; \\
+	\$(PERL) -MExtUtils::Command -e cp NewsClipper.cfg "$home/.NewsClipper"; \\
     EOF
   }
 
@@ -531,27 +626,27 @@ sub MY::postamble
   {
     $returnText .=<<"    EOF";
 	echo '  Copying NewsClipper.cfg to $newsclipper_cfg_path ...'; \\
-	perl -MExtUtils::Command -e mkpath "$newsclipper_cfg_path"; \\
-	perl -MExtUtils::Command -e cp NewsClipper.cfg "$newsclipper_cfg_path"; \\
+	\$(PERL) -MExtUtils::Command -e mkpath "$newsclipper_cfg_path"; \\
+	\$(PERL) -MExtUtils::Command -e cp NewsClipper.cfg "$newsclipper_cfg_path"; \\
     EOF
   }
 
   $returnText .=<<"  EOF";
 	echo '  Making $cfg_file writeable ...'; \\
-	perl -MExtUtils::Command -e "chmod(0666,'$cfg_file')"; \\
+	\$(PERL) -MExtUtils::Command -e "chmod(0666,'$cfg_file')"; \\
   EOF
 
   # Set the modulepath
   $returnText .=<<"  EOF";
 	echo '  Setting modulepath in $cfg_file...'; \\
-	perl -ibak -pe "s|'modulepath' => '.*'|'modulepath' => '$modulepath'|" "$cfg_file"; \\
-	perl -MExtUtils::Command -e "rm_f('${cfg_file}bak')"; \\
+	\$(PERL) -ibak -pe "s|'modulepath' => '.*'|'modulepath' => '$modulepath'|" "$cfg_file"; \\
+	\$(PERL) -MExtUtils::Command -e "rm_f('${cfg_file}bak')"; \\
   EOF
 
   $returnText .=<<"  EOF";
 	echo '  Setting modulepath in $home/.NewsClipper/NewsClipper.cfg...'; \\
-	perl -ibak -pe "s|'modulepath' => '.*'|'modulepath' => '$modulepath'|" "$home/.NewsClipper/NewsClipper.cfg"; \\
-	perl -MExtUtils::Command -e "rm_f('$home/.NewsClipper/NewsClipper.cfgbak')"; \\
+	\$(PERL) -ibak -pe "s|'modulepath' => '.*'|'modulepath' => '$modulepath'|" "$home/.NewsClipper/NewsClipper.cfg"; \\
+	\$(PERL) -MExtUtils::Command -e "rm_f('$home/.NewsClipper/NewsClipper.cfgbak')"; \\
   EOF
 
   return $returnText;

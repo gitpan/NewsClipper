@@ -1,14 +1,12 @@
-#!/users/dwc3q/perl/bin/perl
-
-eval 'exec /users/dwc3q/perl/bin/perl  -S $0 ${1+"$@"}'
-    if 0; # not running under some shell
-
+#!/usr/bin/perl
 # use perl                                  -*- mode: Perl; -*-
 
 use strict;
 
-my $NC_CONFIG_VERSION = '1.21';
-my $VERSION = 0.20;
+# The version of the config
+my $NC_CONFIG_VERSION = '1.30';
+
+my $VERSION = 0.40;
 
 #-------------------------------------------------------------------------------
 
@@ -39,16 +37,31 @@ $NC_CONFIG_VERSION. No need to update.
   exit;
 }
 
-if ($old_version < 1.21)
-{
-  $code = AddNewsClipperVersion($code,$NC_CONFIG_VERSION);
-}
-
 if ($old_version < 1.18)
 {
   $code = ConvertHandlerConfig($code);
   $code = AddAutoDownload($code);
   $code = AddFTP($code);
+}
+
+if ($old_version < 1.21)
+{
+  $code = AddUpdateNewsClipperVersion($code,$NC_CONFIG_VERSION);
+}
+
+if ($old_version < 1.29)
+{
+  $code = AddTagText($code);
+  $code = AddChmod($code);
+  $code = AddLogging($code);
+  $code = UpdateOptionNames($code);
+  $code = AddUpdateNewsClipperVersion($code,$NC_CONFIG_VERSION);
+}
+
+if ($old_version < 1.30)
+{
+  $code = AddEmail($code);
+  $code = AddUpdateNewsClipperVersion($code,$NC_CONFIG_VERSION);
 }
 
 if ($old_code eq $code)
@@ -142,12 +155,40 @@ sub AddFTP
 
 # -----------------------------------------------------------------------------
 
+sub AddEmail
+{
+  my $code = shift;
+
+  my ($ftp_file_code) = $code =~ /(ftp_files.*?\[.*?\].*?\n)/s;
+
+  my $email=<<'  EOF';
+# email_files allows you to email your output files to one or more email
+# addresses. Make sure there is one set of emails for each output file.  The
+# first set applies to the first output file, the second set to the second
+# output file, etc. If you don't want to email a file, just use [] for the
+# information. The example shows how to send one output file.
+'email_files' => [
+#  {'From'    => 'News Clipper <newsclipper@your.server>',
+#   'To'      => 'First Person <person1@their.server>',
+#   'Cc'      => '',
+#   'Bcc'     => '',
+#   'Subject' => 'Newsletter'},
+],
+  EOF
+
+  $code =~ s/(ftp_files.*?\[.*?\].*?\n)/$1\n$email/s;
+
+  return $code;
+}
+
+# -----------------------------------------------------------------------------
+
 sub GetNewsClipperVersion
 {
   my $code = shift;
 
   my ($for_news_clipper_version) =
-    $code =~ /'forNewsClipperVersion' *=> *(.*?) *,/s;
+    $code =~ /'(?:for_news_clipper_version|forNewsClipperVersion)' *=> *(.*?) *,/s;
 
   # Ug. Pre "forNewsClipperVersion" days...
   if (!defined $for_news_clipper_version)
@@ -170,13 +211,13 @@ sub GetNewsClipperVersion
 
 # -----------------------------------------------------------------------------
 
-sub AddNewsClipperVersion
+sub AddUpdateNewsClipperVersion
 {
   my $code = shift;
   my $NC_CONFIG_VERSION = shift;
 
   my ($nc_version_code,$for_news_clipper_version) =
-    $code =~ /('forNewsClipperVersion' *=> *(.*?) *,)/s;
+    $code =~ /('(?:for_news_clipper_version|forNewsClipperVersion)' *=> *(.*?) *,)/s;
 
   if (defined $nc_version_code)
   {
@@ -192,6 +233,91 @@ sub AddNewsClipperVersion
     EOF
     $code =~ s/(\%config *= *\( *\n)/$1\n$new_version_code/s;
   }
+
+  return $code;
+}
+
+# -----------------------------------------------------------------------------
+
+sub AddTagText
+{
+  my $code = shift;
+
+  my $add_code =<<EOF;
+# The keyword to indicate News Clipper commands. The default is "newsclipper",
+# which results in <!-- newsclipper ... --> as the default command comment.
+'tag_text' => 'newsclipper',
+
+EOF
+
+  $code =~ s/(auto_download_bugfix.*?\n)(\);)/$1$add_code$2/s;
+
+  return $code;
+}
+
+# -----------------------------------------------------------------------------
+
+sub AddChmod
+{
+  my $code = shift;
+
+  my $add_code =<<EOF;
+# Determines whether output files should be made executable as well as
+# readable.
+'make_output_files_executable' => 'yes',
+
+EOF
+
+  $code =~ s/(tag_text.*?\n)(\);)/$1$add_code$2/s;
+
+  return $code;
+}
+
+# -----------------------------------------------------------------------------
+
+sub AddLogging
+{
+  my $code = shift;
+
+  my $add_code =<<EOF;
+# The location of the News Clipper debug and error log files. Set to "STDOUT"
+# or "STDERR" to send to standard output or standard error.
+'debug_log_file' => "\$home/.NewsClipper/logs/debug.log",
+'run_log_file' => "\$home/.NewsClipper/logs/run.log",
+
+# These values allow you to configure the old logs that are saved. After the
+# log file reaches the max_log_file_size (in bytes), it is renamed and a new
+# one is started. If there the max_number_of_log_files has been reached, then
+# the oldest one is deleted before the logs are rotated. On Unix systems the
+# old log files are zipped.
+'max_number_of_log_files' => 7,
+'max_log_file_size' => 1000000,
+
+EOF
+
+  $code =~ s/(tag_text.*?\n)(\);)/$1$add_code$2/s;
+
+  return $code;
+}
+
+# -----------------------------------------------------------------------------
+
+sub UpdateOptionNames
+{
+  my $code = shift;
+
+  $code =~ s/forNewsClipperVersion/for_news_clipper_version/g;
+  $code =~ s/regKey/registration_key/g;
+  $code =~ s/inputFiles/input_files/g;
+  $code =~ s/outputFiles/output_files/g;
+  $code =~ s/ftpFiles/ftp_files/g;
+  $code =~ s/handlerlocations/handler_locations/g;
+  $code =~ s/modulepath/module_path/g;
+  $code =~ s/cachelocation/cache_location/g;
+  $code =~ s/maxcachesize/max_cache_size/g;
+  $code =~ s/scriptTimeout/script_timeout/g;
+  $code =~ s/socketTries/socket_tries/g;
+  $code =~ s/socketTimeout/socket_timeout/g;
 
   return $code;
 }
@@ -217,11 +343,16 @@ sub WriteConfig($$)
   my $configFile = shift;
   my $code = shift;
 
-  my $backup = $configFile;
-  $backup =~ s/.[^\.]+$/.bak/i;
+  my $backup;
 
-  print "\"$backup\" already exists. Configuration NOT saved.\n" and return
-    if -e $backup;
+  for (my $i = 1; 1; $i++)
+  {
+    $backup = $configFile;
+    $backup =~ s/$/.bak/i;
+    $backup .= $i unless $i == 1;
+    last unless -e $backup;
+  }
+
   rename $configFile,$backup or
     warn "Couldn't not rename $configFile\n  to $backup. Skipping...\n"
       and return;

@@ -21,7 +21,7 @@ BEGIN
   NewsClipper::Globals->import;
 }
 
-$VERSION = 0.62;
+$VERSION = 0.70;
 
 my $span_active = 0;
 
@@ -82,27 +82,29 @@ sub comment
   my $self = shift;
   my $originalText = pop @_;
 
-  if ($originalText =~ /^\s*newsclipper\s+startcomment\b/is)
+  if ($originalText =~ /^\s*$config{tag_text}\s+startcomment\b/is)
   {
     $span_active = 1;
   }
-  elsif ($originalText =~ /^\s*newsclipper\s+endcomment\b/is)
+  elsif ($originalText =~ /^\s*$config{tag_text}\s+endcomment\b/is)
   {
     $span_active = 0;
   }
-  elsif ($originalText =~ /^\s*newsclipper\b/is)
+  elsif ($originalText =~ /^\s*$config{tag_text}\b/is)
   {
     return if $span_active;
 
-    dprint "Found newsclipper tag:";
+    dprint "Found $config{tag_text} tag:";
+    lprint "Found $config{tag_text} tag:";
 
     # Clear out the %errors log
     undef %errors;
 
     dprint "<!--$originalText-->";
+    lprint "<!--$originalText-->";
 
     # Take off the newsclipper stuff
-    my ($commandText) = $originalText =~ /^\s*newsclipper\s*(.*)\s*$/is;
+    my ($commandText) = $originalText =~ /^\s*$config{tag_text}\s*(.*)\s*$/is;
 
     # Get the commands
     my $parser = new NewsClipper::TagParser;
@@ -137,11 +139,11 @@ sub comment
       {
         print dequote <<"        EOF";
           <p>
-          <a href="http://www.newsclipper.com">
+          <a href="http://www.newsclipper.com/">
           <img src="http://www.newsclipper.com/images/ncnow.gif" align=left>
           </a>
           This dynamic content brought to you by
-          <a href="http://www.newsclipper.com">News Clipper</a>. The registered
+          <a href="http://www.newsclipper.com/">News Clipper</a>. The registered
           version does not have this message.
           </p>
 
@@ -152,7 +154,7 @@ sub comment
       }
     }
     
-    PrintErrors($originalText);
+    LogErrorsAndPrintNotice($originalText);
     undef %errors;
   }
   # If it's not a special tag, just print it out.
@@ -170,7 +172,7 @@ sub comment
 # Print out any errors that occured while executing a sequence of News Clipper
 # commands
 
-sub PrintErrors
+sub LogErrorsAndPrintNotice
 {
   my $commands = shift;
 
@@ -182,14 +184,12 @@ sub PrintErrors
   # Localize %errors since we're going to change it.
   local %errors = %errors;
 
-  print "<!-- News Clipper error message:\n";
-
   my $wereErrors = 0;
   $wereErrors = 1 if keys %errors;
 
   if (exists $errors{'tagparser'})
   {
-    print reformat dequote <<"    EOF";
+    lprint reformat dequote <<"    EOF";
       The following errors occurred while processing this
       sequence of commands: $errors{'tagparser'}
     EOF
@@ -197,7 +197,7 @@ sub PrintErrors
 
   if (exists $errors{'parser'})
   {
-    print reformat dequote <<"    EOF";
+    lprint reformat dequote <<"    EOF";
       The following errors occurred while processing this
       News Clipper comment: $errors{'parser'}
     EOF
@@ -205,7 +205,7 @@ sub PrintErrors
 
   if (exists $errors{'acquisition'})
   {
-    print reformat dequote <<"    EOF";
+    lprint reformat dequote <<"    EOF";
       The following errors occurred while attempting to
       acquire the data from the remote server: $errors{'acquisition'}
     EOF
@@ -213,7 +213,7 @@ sub PrintErrors
 
   if (exists $errors{'interpreter'} && !exists $errors{'acquisition'})
   {
-    print reformat dequote <<"    EOF";
+    lprint reformat dequote <<"    EOF";
       The following errors occurred while attempting to execute the
       News Clipper commands: $errors{'interpreter'}
     EOF
@@ -223,7 +223,7 @@ sub PrintErrors
   {
     if ($key =~ /^handler#(.*)/)
     {
-      print reformat dequote <<"      EOF";
+      lprint reformat dequote <<"      EOF";
         The following errors occurred while executing the handler "$1"
         with this sequence of commands: $errors{$key}
       EOF
@@ -244,7 +244,7 @@ sub PrintErrors
   # Now print any remaining, unknown, errors.
   foreach my $key (keys %errors)
   {
-    print reformat dequote <<"    EOF";
+    lprint reformat dequote <<"    EOF";
       Unrecognized error: $errors{$key}
 
     EOF
@@ -255,12 +255,12 @@ sub PrintErrors
   {
     $commands =~ s/^.*?\n*(\s*<)/$1/s;
     $commands =~ s/\s*$//s;
-    print "\nThe sequence of commands was:\n$commands\n";
+    lprint "\nThe sequence of commands was:\n$commands\n";
 
     if (($commands !~ /<\s*output/i) && (defined $expandedCommands))
     {
       $expandedCommands =~ s/\s*$//s;
-      print <<"      EOF";
+      lprint <<"      EOF";
 This input command was expanded using the default filter and output commands
 for the handler, which resulted in:
 $commands
@@ -269,7 +269,11 @@ $expandedCommands
     }
   }
 
-  print "-->\n\n";
+  print<<"  EOF";
+<!-- News Clipper error message: An error occured while processing this
+sequence of News Clipper commands. See the run log file entry with timestamp
+"$config{start_time}" for more information. -->
+  EOF
 }
 
 1;
