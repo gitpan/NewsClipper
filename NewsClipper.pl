@@ -41,7 +41,7 @@ sub dequote($;$);
 use vars qw(&dprint &reformat &dequote);
 
 # The version of the script
-$VERSION = do {my @r=(q$ 1.3.0 $=~/\d+/g);sprintf"%d."."%1d"x$#r,@r};
+$VERSION = do {my @r=(q$ 1.3.2 $=~/\d+/g);sprintf"%d."."%1d"x$#r,@r};
 
 # The version of configuration file that this version of News Clipper can use.
 $COMPATIBLE_CONFIG_VERSION = 1.30;
@@ -647,14 +647,14 @@ sub LoadConfigFiles()
 # ------------------------------------------------------------------------------
 
 # Loads the system-wide configuration file, storing the location of that file
-# in $config{sysconfigfile}. The location is specified by the NEWSCLIPPER
+# in $config{sys_config_file}. The location is specified by the NEWSCLIPPER
 # environment variable.
 
 sub LoadSysConfig()
 {
   my $warnings;
 
-  $config{sysconfigfile} = 'Not specified';
+  $config{sys_config_file} = 'Not specified';
 
   unless (exists $ENV{NEWSCLIPPER})
   {
@@ -734,7 +734,7 @@ $evalWarnings
   # No error message means we found it
   if ($evalResult)
   {
-    $config{sysconfigfile} = $configFile;
+    $config{sys_config_file} = $configFile;
     return ('okay','');
   }
   else
@@ -748,12 +748,12 @@ $evalWarnings
 # ------------------------------------------------------------------------------
 
 # Loads the user's configuration file, storing the location of that file in
-# $config{userconfigfile}. The location of this file is
+# $config{user_config_file}. The location of this file is
 # $home/.NewsClipper/NewsClipper.cfg.
 
 sub LoadUserConfig()
 {
-  $config{userconfigfile} = 'Not found';
+  $config{user_config_file} = 'Not found';
 
   my $home = GetHomeDirectory();
   my $configFile = $opts{c} || "$home/.NewsClipper/NewsClipper.cfg";
@@ -867,7 +867,7 @@ $evalWarnings
   # No error message means we found it
   if ($evalResult)
   {
-    $config{userconfigfile} = $configFile;
+    $config{user_config_file} = $configFile;
 
     # Now override main's %config
     while (my ($key,$value) = each %NewsClipper::config::config)
@@ -925,8 +925,8 @@ sub ValidateConfigFiles
 Could not find either a system-wide configuration file or a personal
 configuration file.
   EOF
-    if $config{sysconfigfile} eq 'Not specified' &&
-       $config{userconfigfile} eq 'Not found';
+    if $config{sys_config_file} eq 'Not specified' &&
+       $config{user_config_file} eq 'Not found';
 
   if (!defined $config{for_news_clipper_version} ||
       ($config{for_news_clipper_version} < $COMPATIBLE_CONFIG_VERSION))
@@ -992,6 +992,18 @@ sub ValidateSetup()
       ftp any files, there should be nothing specified. If you want to ftp any
       files, you must specify the information for each file, or use "{}" to
       indicate that a file should not be sent.
+    EOF
+  }
+
+  # Check that if the user is using email_files, the number matches
+  if ($#{$config{email_files}} != -1 &&
+      $#{$config{email_files}} != $#{$config{output_files}})
+  {
+    die reformat dequote <<"    EOF";
+      Your email information is not correctly specified. If you do not want to
+      email any files, there should be nothing specified. If you want to email
+      any files, you must specify the information for each file, or use "{}"
+      to indicate that a file should not be emailed.
     EOF
   }
 
@@ -1068,8 +1080,8 @@ sub PrintDebugSummary(\@)
   require Cwd;
   dprint "Current directory:\n  ",Cwd::cwd(),"\n";
 
-  dprint "System-wide configuration file found as:\n  $config{sysconfigfile}\n";
-  dprint "Personal configuration file found as:\n  $config{userconfigfile}\n";
+  dprint "System-wide configuration file found as:\n  $config{sys_config_file}\n";
+  dprint "Personal configuration file found as:\n  $config{user_config_file}\n";
 
   dprint "\@INC before loading configuration:";
   dprint "  $_" foreach @startingINC;
@@ -1169,16 +1181,23 @@ sub CheckRegistration()
   $numHandlers = '' unless defined $numHandlers;
   $code = '' unless defined $code;
 
-  my $licensestring =
+  # We will try two strings--one with the operating system (pre-1.32) and one
+  # without the operating system (after-1.32).
+  my $licensestring1 =
     "$date#$license#$^O#$config{email}#$numPages#$numHandlers";
+  my $licensestring2 =
+    "$date#$license#$config{email}#$numPages#$numHandlers";
 
   # Mash groups of eight together to help hash the string for crypt, which can
   # only use up to eight characters
-  my $hashed = "";
-  foreach ($licensestring =~ /(.{1,8})/gs) { $hashed ^= $_ }
+  my $hashed1 = "";
+  my $hashed2 = "";
 
-  # Now check the key
-  if (crypt ($hashed,$code) eq $code)
+  foreach ($licensestring1 =~ /(.{1,8})/gs) { $hashed1 ^= $_ }
+  foreach ($licensestring2 =~ /(.{1,8})/gs) { $hashed2 ^= $_ }
+
+  # Now check the key.
+  if ((crypt($hashed1,$code) eq $code) || (crypt($hashed2,$code) eq $code))
   {
     if ($license eq 'p')
     {
@@ -1199,16 +1218,19 @@ sub CheckRegistration()
       information News Clipper was able to determine:
     EOF
     die dequote '  ',<<"    EOF";
-      System-wide configuration file: $config{sysconfigfile}
-      Personal configuration file: $config{userconfigfile}
+      System-wide configuration file: $config{sys_config_file}
+      Personal configuration file: $config{user_config_file}
       Email: $config{email}
       Key: $config{registration_key}
-      Operating System: $^O
       Date Issued: $date
       License Type: $license
       Number of pages: $numPages
       Number of Handlers: $numHandlers
     EOF
+  }
+  else
+  {
+    # Stays the trial version
   }
 }
 

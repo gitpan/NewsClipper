@@ -533,6 +533,12 @@ sub Compute_Makefile_Attributes
             '$(INST_LIBDIR)/NewsClipper/Parser.pm',
         'NewsClipper/TagParser.pm' =>
             '$(INST_LIBDIR)/NewsClipper/TagParser.pm',
+        'NewsClipper/Server.pm' =>
+            '$(INST_LIBDIR)/NewsClipper/Server.pm',
+        'NewsClipper/Server/CGI.pm' =>
+            '$(INST_LIBDIR)/NewsClipper/Server/CGI.pm',
+        'NewsClipper/Server/MySQL.pm' =>
+            '$(INST_LIBDIR)/NewsClipper/Server/MySQL.pm',
       },
       'EXE_FILES' => \@programs,
       'PREREQ_PM' => { 'HTML::Parser' => 2.06,
@@ -549,7 +555,6 @@ sub Compute_Makefile_Attributes
                        'Log::Agent' => 0,
                        'Log::Agent::Rotate' => 0,
                        'Log::Agent::Driver::File' => 0,
-                       'DBI' => 0,
                      },
     );
   }

@@ -1,3 +1,17 @@
+New in version 1.32:
+- Fixed more installation problems (Thanks to Craig Brockmeier
+  <craig@phillips66.ppco.com>)
+- Dropped DBI requirement during installation because it's really optional.
+- Changed commercial version so it can run on any operating system with the
+  same registration key. (Old keys will continue to work if on the same
+  operating system, but new ones will need to be issued if a new operating
+  system is needed.)
+- Made handler loading routines more robust to illegal characters in the
+  handler name.
+
+New in version 1.31:
+- Fixed a couple installation problems (Server files weren't being installed.)
+
 New in version 1.30:
 - Fixed a bug in detection of incompatible configuration file.
 - Removed cacheimages option processing code from NewsClipper.pl, and put it

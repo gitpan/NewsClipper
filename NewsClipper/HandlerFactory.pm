@@ -10,29 +10,32 @@ use Carp;
 use LWP::UserAgent;
 # For mkpath
 use File::Path;
-# For find
-use File::Find;
 
 use vars qw( $VERSION );
 
-$VERSION = 0.89;
+$VERSION = 0.91;
 
 use NewsClipper::Globals;
+use NewsClipper::Server;
 
 my $userAgent = new LWP::UserAgent;
 
 my $TIME_BETWEEN_FUNCTIONAL_UPDATES = 24 * 60 * 60;
 my $TIME_BETWEEN_BUGFIX_UPDATES = 8 * 60 * 60;
-my $HANDLER_SERVER = 'handlers.newsclipper.com';
-#my $HANDLER_SERVER = '192.168.0.1';
-my $COMPATIBLE_NEWS_CLIPPER_VERSION = 1.18;
+
+# A reference to the server object
+my $SERVER;
 
 # Caches used to avoid unnecessary processing of handlers
-my @updatedHandlers;
-my @allowedHandlers;
-my @compatibleHandlers;
-my %handler_type;
-my %downloadedCode;
+my @UPDATED_HANDLERS;
+my @ALLOWED_HANDLERS;
+my %COMPATIBLE_HANDLERS;
+
+# Avoid multiple warnings about the server being down
+my $ALREADY_WARNED_SERVER_DOWN = 0;
+
+# This version of News Clipper uses handlers of this type
+my $COMPATIBLE_NEWS_CLIPPER_VERSION = 1.18;
 
 # ------------------------------------------------------------------------------
 
@@ -49,6 +52,9 @@ sub new
 
   # Make the object a member of the class
   bless ($self, $class);
+
+  # Initialize the server connection
+  $SERVER = new NewsClipper::Server;
 
   return $self;
 }
@@ -72,28 +78,19 @@ sub Create
 
   # First see if the handler is okay to use given the trial/personal
   # restrictions.
-  _CheckRegistrationRestriction($handler_name);
-
-  # Check that the handler version is compatible
-  {
-    my $handler_version_compatibility_result = 
-      _HandlerVersionIsCompatible($handler_name);
-
-    if (defined $handler_version_compatibility_result &&
-      $handler_version_compatibility_result == 0)
-    {
-      return undef;
-    }
-  }
+  _Check_Registration_Restriction($handler_name);
 
   # Download the handler if we need to, either because ours is
   # out of date, or because we don't have it installed.
-  my $update_result = _DoHandlerUpdate($handler_name);
+  _Update_Handler($handler_name);
+
+  # Check that the handler version is compatible
+  return undef unless _Handler_Version_Is_Compatible($handler_name);
 
   my $loadResult;
 
   # Try to load the handler
-  $loadResult = _LoadHandler($handler_name);
+  $loadResult = _Load_Handler($handler_name);
 
   if ($loadResult =~ /^found/)
   {
@@ -109,124 +106,116 @@ sub Create
 
 # ------------------------------------------------------------------------------
 
-# Downloads or updates from the remote the handler if necessary. Returns
-# 'updated' if the handler was updated, 'not updated' if it wasn't, and
-# 'failed' if something when wrong. Updates are necessary if:
+# Downloads or updates the handler from the remote server if necessary.
+# Updates are necessary if:
 # * the handler isn't anywhere on the system
 # * auto_download_bugfix_updates is 'yes' and there is a bugfix version
 # * -n was specified and a functional or bugfix version is available.
 
-sub _DoHandlerUpdate
+sub _Update_Handler
 {
   my $handler_name = shift;
 
   dprint "Checking if handler \"$handler_name\" needs to be updated.";
 
   # Skip this handler if we've already processed it.
-  if (grep { /^$handler_name$/i } @updatedHandlers)
+  if (grep { /^$handler_name$/i } @UPDATED_HANDLERS)
   {
-    dprint "Skipping already checked handler \"$handler_name\".";
-    return 'not updated';
+    dprint "Skipping already updated handler \"$handler_name\".";
+    return;
   }
 
-  push @updatedHandlers,$handler_name;
+  push @UPDATED_HANDLERS,$handler_name;
 
   # First check if the handler isn't on the system.
-  if (_LoadHandler($handler_name) eq 'not found')
+  if (_Load_Handler($handler_name) eq 'not found')
   {
     dprint "Handler isn't installed, so we need to download it.";
-
-    my ($versionStatus,$newVersion,$updateType) =
-      _GetNewHandlerVersion($handler_name,'functional');
-
-    if ($versionStatus eq 'not found')
-    {
-      warn reformat dequote <<"      EOF";
-        The handler server reports that the handler $handler_name is not in
-        the database.
-      EOF
-      return 'failed';
-    }
-
-    if ($versionStatus eq 'no update')
-    {
-      die "News Clipper encountered a \"no update\" when there is no local " .
-        "version of handler $handler_name";
-    }
-
-    if ($versionStatus eq 'failed')
-    {
-      warn reformat dequote <<"      EOF";
-        Couldn't determine which version of the handler $handler_name to
-        download because the server is down. Try again in a while, and send
-        email to bugreport\@newsclipper.com if the problem persists.
-      EOF
-      return 'failed';
-    }
-    elsif ($versionStatus ne 'okay')
-    {
-      die "News Clipper encountered an unknown \$versionStatus";
-    }
-
-    dprint "There is a remote handler available.";
-
-    my $download_result = _DownloadHandler($handler_name,$newVersion);
-    return 'updated' if $download_result eq 'okay';
-
-    if ($download_result eq 'not found')
-    {
-      warn reformat dequote <<"      EOF";
-        Couldn't install the handler $handler_name. The handler server reports
-        that the handler is not in the database.
-      EOF
-      return 'failed';
-    }
-    elsif ($download_result =~ /failed: (.*)/s)
-    {
-      warn reformat dequote $1;
-      return 'failed';
-    }
+    _Download_New_Handler($handler_name);
+    return;
   }
+
   # The handler is on the system, so do an update if we need to.
+  my $update_status;
+
+  $update_status = _Do_Handler_Functional_Update($handler_name);
+  return if $update_status =~ /^(updated|failed)$/;
+
+  $update_status = _Do_Handler_Bugfix_Update($handler_name);
+}
+
+# ------------------------------------------------------------------------------
+
+# Downloads and installs the latest version of a handler
+
+sub _Download_New_Handler($)
+{
+  my $handler_name = shift;
+
+  my ($versionStatus,$newVersion,$updateType) =
+    $SERVER->Get_New_Handler_Version($handler_name, 'functional',
+      undef, $COMPATIBLE_NEWS_CLIPPER_VERSION);
+
+  if ($versionStatus eq 'not found')
+  {
+    warn reformat dequote <<"    EOF";
+      Can't download handler $handler_name.
+      The handler server reports that the handler $handler_name is not in
+      the database.
+    EOF
+    return;
+  }
+
+  if ($versionStatus eq 'no update')
+  {
+    die "News Clipper encountered a \"no update\" when there is no local " .
+      "version of handler $handler_name";
+  }
+
+  if ($versionStatus eq 'failed')
+  {
+    return if $ALREADY_WARNED_SERVER_DOWN;
+    $ALREADY_WARNED_SERVER_DOWN = 1;
+
+    warn reformat dequote <<"    EOF";
+      Couldn't determine which version of the handler $handler_name to
+      download because the server is down. Try again in a while, and send
+      email to bugreport\@newsclipper.com if the problem persists.
+      Additional warnings regarding this problem will not be displayed.
+    EOF
+    return;
+  }
+
+  if ($versionStatus ne 'okay')
+  {
+    die "News Clipper encountered an unknown \$versionStatus";
+  }
+
+  dprint "There is a remote handler available.";
+
+  my $download_result = _Download_Handler_By_Version($handler_name,$newVersion);
+
+  if ($download_result eq 'okay')
+  {
+    _Unload_Handler($handler_name);
+    return;
+  }
+  elsif ($download_result eq 'not found')
+  {
+    warn reformat dequote <<"    EOF";
+      Couldn't install the handler $handler_name. The handler server reports
+      that the handler is not in the database.
+    EOF
+    return;
+  }
+  elsif ($download_result =~ /failed: (.*)/s)
+  {
+    warn reformat dequote $1;
+    return;
+  }
   else
   {
-    my $update_status;
-
-    $update_status = _DoHandlerFunctionalUpdate($handler_name);
-
-    if ($update_status eq 'updated')
-    {
-      _UnLoadHandler($handler_name);
-      return 'updated';
-    }
-    elsif ($update_status eq 'failed')
-    {
-      return 'failed';
-    }
-    elsif ($update_status ne 'not updated')
-    {
-      die "News Clipper encountered an unknown \$update_status";
-    }
-
-    $update_status = _DoHandlerBugfixUpdate($handler_name);
-
-    if ($update_status eq 'updated')
-    {
-      _UnLoadHandler($handler_name);
-      return 'updated';
-    }
-    elsif ($update_status eq 'not updated')
-    {
-      return 'not updated';
-    }
-    elsif ($update_status eq 'failed')
-    {
-      return 'failed';
-    }
-    else
-    {
-      die "News Clipper encountered an unknown \$update_status";
-    }
+    die "News Clipper encountered an unknown \$download_result";
   }
 }
 
@@ -235,7 +224,7 @@ sub _DoHandlerUpdate
 # Checks for and does a functional update for a handler. Returns 'updated',
 # 'not updated', or 'failed'. Handles any error messages to the user.
 
-sub _DoHandlerFunctionalUpdate
+sub _Do_Handler_Functional_Update
 {
   my $handler_name = shift;
 
@@ -260,8 +249,10 @@ sub _DoHandlerFunctionalUpdate
   }
 
   # Now do the check
+  my $localVersion = _Get_Local_Handler_Version($handler_name);
   my ($versionStatus,$newVersion,$updateType) =
-    _GetNewHandlerVersion($handler_name,'functional');
+    $SERVER->Get_New_Handler_Version($handler_name,'functional',$localVersion,
+    $COMPATIBLE_NEWS_CLIPPER_VERSION);
 
   if ($versionStatus eq 'not found')
   {
@@ -273,75 +264,43 @@ sub _DoHandlerFunctionalUpdate
     $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
     return 'not updated';
   }
-  elsif ($versionStatus eq 'no update')
+
+  if ($versionStatus eq 'no update')
   {
     dprint "There is a no new functional or bugfix update version.";
     $NewsClipper::Globals::state->set("last_functional_check_$handler_name",time);
     $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
     return 'not updated';
   }
-  # failed, so we check next time too instead of waiting
-  elsif ($versionStatus eq 'failed')
+
+  # Failed, so we check next time too instead of waiting
+  if ($versionStatus eq 'failed')
   {
+    return 'failed' if $ALREADY_WARNED_SERVER_DOWN;
+    $ALREADY_WARNED_SERVER_DOWN = 1;
+
     $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
       Couldn't determine if there is a newer functional update version of
       $handler_name available because the server is down. Try again in a while,
       and send email to bugreport\@newsclipper.com if the problem persists.
+      Additional warnings regarding this problem will not be displayed.
     EOF
     return 'failed';
-  }
-  elsif ($versionStatus ne 'okay')
-  {
-    die "News Clipper encountered an unknown \$versionStatus";
   }
 
   dprint "There is a new " . $updateType . " version.";
   $NewsClipper::Globals::state->set("last_functional_check_$handler_name",time);
   $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
 
-  # Do automatic download if it's a bugfix and auto_download_bugfix_updates is
-  # specified, or if -a was specified.
-  if ($opts{a} || ($updateType eq 'bugfix' && 
-        $main::config{auto_download_bugfix_updates} =~ /^y/i))
-  {
-    dprint "Doing automatic download for handler \"$handler_name\"";
-  }
-  # Prompt the user if run interactively, and the user didn't specify one of
-  # the auto download options
-  elsif (-t STDIN)
-  {
-    warn "There is a newer version of handler \"$handler_name\".\n";
-    warn "Would you like News Clipper to attempt to download it? [y/n]\n";
-    my $response = <STDIN>;
+  return 'not updated' unless _Okay_To_Download($handler_name,$updateType);
 
-    return 'not updated' if $response !~ /^y/i;
-  }
-  # Otherwise we just warn the user we can't do a download
-  elsif ($updateType eq 'bugfix')
-  {
-    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
-      A bugfix update to handler "$handler_name" is available, but it can't be
-      downloaded because auto_download_bugfix_updates is not "yes" in your
-      configuration file, and since News Clipper can't ask you interactively.
-    EOF
-    return 'not updated';
-  }
-  elsif ($updateType eq 'functional')
-  {
-    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
-      A functional update to handler "$handler_name" is available, but it can't
-      be downloaded because the -a flag was not specified, and since News
-      Clipper can't ask you interactively.
-    EOF
-    return 'not updated';
-  }
-  else
-  {
-    die "News Clipper encountered an unknown input scenario";
-  }
+  my $download_result = _Download_Handler_By_Version($handler_name,$newVersion);
 
-  my $download_result = _DownloadHandler($handler_name,$newVersion);
-  return 'updated' if $download_result eq 'okay';
+  if ($download_result eq 'okay')
+  {
+    _Unload_Handler($handler_name);
+    return 'updated';
+  }
 
   if ($download_result eq 'not found')
   {
@@ -351,7 +310,8 @@ sub _DoHandlerFunctionalUpdate
     EOF
     return 'failed';
   }
-  elsif ($download_result =~ /failed: (.*)/s)
+
+  if ($download_result =~ /failed: (.*)/s)
   {
     $errors{"handler#$handler_name"} = reformat dequote $1;
     return 'failed';
@@ -363,12 +323,12 @@ sub _DoHandlerFunctionalUpdate
 # Checks for and does a bugfix update for a handler. Returns 'updated',
 # 'not updated', or 'failed'. Handles any error messages to the user.
 
-sub _DoHandlerBugfixUpdate
+sub _Do_Handler_Bugfix_Update
 {
   my $handler_name = shift;
 
   # Bugfix updates are only prompted by -n or auto_download_bugfix_updates
-  unless ($opts{n} || $main::config{auto_download_bugfix_updates} =~ /^y/i)
+  unless ($opts{n} || $config{auto_download_bugfix_updates} =~ /^y/i)
   {
     dprint "Skipping bugfix update check -- neither -n nor " .
       "auto_download_bugfix_updates was specified";
@@ -389,8 +349,10 @@ sub _DoHandlerBugfixUpdate
   }
 
   # Now do the check
+  my $localVersion = _Get_Local_Handler_Version($handler_name);
   my ($versionStatus,$newVersion,$updateType) =
-    _GetNewHandlerVersion($handler_name,'bugfix');
+    $SERVER->Get_New_Handler_Version($handler_name,'bugfix',$localVersion,
+    $COMPATIBLE_NEWS_CLIPPER_VERSION);
 
   if ($versionStatus eq 'not found')
   {
@@ -401,61 +363,40 @@ sub _DoHandlerBugfixUpdate
     $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
     return 'not updated';
   }
-  elsif ($versionStatus eq 'no update')
+
+  if ($versionStatus eq 'no update')
   {
     dprint "There is a no new bugfix update version.";
     $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
     return 'not updated';
   }
-  elsif ($versionStatus eq 'failed')
+
+  if ($versionStatus eq 'failed')
   {
+    return 'failed' if $ALREADY_WARNED_SERVER_DOWN;
+    $ALREADY_WARNED_SERVER_DOWN = 1;
+
     $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
       Couldn't determine if there is a newer bugfix update version of
       $handler_name available because the server is down. Try again in a while,
       and send email to bugreport\@newsclipper.com if the problem persists.
+      Additional warnings regarding this problem will not be displayed.
     EOF
     return 'failed';
   }
-  elsif ($versionStatus ne 'okay')
-  {
-    die "News Clipper encountered an unknown \$versionStatus";
-  }
-
-  die "Non-bugfix update type encountered for a bugfix update check"
-    if $updateType ne 'bugfix';
 
   dprint "There is a new bugfix version.";
   $NewsClipper::Globals::state->set("last_bugfix_check_$handler_name",time);
 
-  # Do automatic download if auto_download_bugfix_updates is specified, or if
-  # -a was specified.
-  if ($opts{a} || $main::config{auto_download_bugfix_updates} =~ /^y/i)
-  {
-    dprint "Doing automatic download for handler \"$handler_name\"";
-  }
-  # Prompt the user if run interactively, and the user didn't specify one of
-  # the auto download options
-  elsif (-t STDIN)
-  {
-    warn "There is a newer version of handler \"$handler_name\".\n";
-    warn "Would you like News Clipper to attempt to download it? [y/n]\n";
-    my $response = <STDIN>;
+  return 'not updated' unless _Okay_To_Download($handler_name,$updateType);
 
-    return 'not updated' if $response !~ /^y/i;
-  }
-  # Otherwise we just warn the user we can't do a download
-  else
-  {
-    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
-      A bugfix update to handler "$handler_name" is available, but it can't be
-      downloaded because auto_download_bugfix_updates is not "yes" in your
-      configuration file, and since News Clipper can't ask you interactively.
-    EOF
-    return 'not updated';
-  }
+  my $download_result = _Download_Handler_By_Version($handler_name,$newVersion);
 
-  my $download_result = _DownloadHandler($handler_name,$newVersion);
-  return 'updated' if $download_result eq 'okay';
+  if ($download_result eq 'okay')
+  {
+    _Unload_Handler($handler_name);
+    return 'updated';
+  }
 
   if ($download_result eq 'not found')
   {
@@ -465,10 +406,132 @@ sub _DoHandlerBugfixUpdate
     EOF
     return 'failed';
   }
-  elsif ($download_result =~ /failed: (.*)/s)
+
+  if ($download_result =~ /failed: (.*)/s)
   {
     $errors{"handler#$handler_name"} = reformat dequote $1;
     return 'failed';
+  }
+}
+
+# ------------------------------------------------------------------------------
+
+# Checks to see if the -a flag or auto_download_bugfix_updates config option
+# allow the handler update to be downloaded. Also tries to ask the user
+# interactively.
+
+sub _Okay_To_Download
+{
+  my $handler_name = shift;
+  my $updateType = shift;
+
+  if ($updateType eq 'bugfix')
+  {
+    if ($opts{a} || $config{auto_download_bugfix_updates} =~ /^y/i)
+    {
+      dprint "Doing automatic download for handler \"$handler_name\"";
+      return 1;
+    }
+
+    # Prompt the user if run interactively, and the user didn't specify one of
+    # the auto download options
+    if (-t STDIN)
+    {
+      warn "There is a newer version of handler \"$handler_name\".\n";
+      warn "Would you like News Clipper to attempt to download it? [y/n]\n";
+      my $response = <STDIN>;
+
+      if ($response =~ /^y/i)
+      {
+        return 1;
+      }
+      else
+      {
+        return 0;
+      }
+    }
+    # Otherwise we just warn the user we can't do a download
+    else
+    {
+      $errors{"handler#$handler_name"} = reformat dequote <<"      EOF";
+        A bugfix update to handler "$handler_name" is available, but it can't be
+        downloaded because auto_download_bugfix_updates is not "yes" in your
+        configuration file, and since News Clipper can't ask you interactively.
+      EOF
+      return 0;
+    }
+  }
+  # It's a functional update
+  else
+  {
+    if ($opts{a})
+    {
+      dprint "Doing automatic download for handler \"$handler_name\"";
+      return 1;
+    }
+    else
+    {
+      $errors{"handler#$handler_name"} = reformat dequote <<"      EOF";
+        A functional update to handler "$handler_name" is available, but it can't
+        be downloaded because the -a flag was not specified, and since News
+        Clipper can't ask you interactively.
+      EOF
+      return 0;
+    }
+  }
+}
+
+# ------------------------------------------------------------------------------
+
+# This routine checks that a handler on the system is for the current version
+# of News Clipper. Returns 1 if the handler is compatible, 0 if it is not or
+# if it wasn't found.
+
+sub _Handler_Version_Is_Compatible($)
+{
+  my $handler_name = shift;
+
+  dprint "Checking if handler \"$handler_name\" is of a compatible version.";
+
+  # Skip this handler if we've already processed it.
+  if (exists $COMPATIBLE_HANDLERS{$handler_name})
+  {
+    dprint reformat (65,
+      "Skipping handler \"$handler_name\" (already checked compatibility).");
+    return $COMPATIBLE_HANDLERS{$handler_name};
+  }
+
+  my $local_handler_nc_version = _Get_Local_Handler_NC_Version($handler_name);
+  unless (defined $local_handler_nc_version)
+  {
+    dprint "Could not get local handler version for $handler_name";
+    $COMPATIBLE_HANDLERS{$handler_name} = 0;
+    return 0;
+  }
+
+  dprint reformat (65,dequote <<"  EOF");
+    Handler "$handler_name" was written for News Clipper version 
+    $local_handler_nc_version, and this version of News Clipper is
+    compatible with version $COMPATIBLE_NEWS_CLIPPER_VERSION.
+  EOF
+
+  if ($local_handler_nc_version != $COMPATIBLE_NEWS_CLIPPER_VERSION)
+  {
+    dprint "Handler $handler_name is incompatible";
+    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
+       Handler $handler_name is incompatible with this version of News Clipper.
+       (The handler is compatible with News Clipper versions that take handlers
+       from version $local_handler_nc_version, but this version of News Clipper
+       uses handlers from version $COMPATIBLE_NEWS_CLIPPER_VERSION).
+    EOF
+    $COMPATIBLE_HANDLERS{$handler_name} = 0;
+    return 0;
+  }
+  else
+  {
+    dprint "Handler $handler_name is compatible";
+    $COMPATIBLE_HANDLERS{$handler_name} = 1;
+    return 1;
   }
 }
 
@@ -478,12 +541,12 @@ sub _DoHandlerBugfixUpdate
 # installed handler. Returns the version number or undef if the handler could
 # not be found.
 
-sub _GetLocalHandlerNCVersion($)
+sub _Get_Local_Handler_NC_Version($)
 {
   my $handler_name = shift;
 
   # Find the handler
-  my $foundDirectory = _GetHandlerPath($handler_name);
+  my $foundDirectory = _Get_Handler_Path($handler_name);
   return undef unless defined $foundDirectory;
 
   open LOCALHANDLER, "$foundDirectory/$handler_name.pm";
@@ -513,14 +576,14 @@ sub _GetLocalHandlerNCVersion($)
 # This function finds the version of the locally installed handler. Returns
 # the version number or undef if the handler could not be found.
 
-sub _GetLocalHandlerVersion($)
+sub _Get_Local_Handler_Version($)
 {
   my $handler_name = shift;
 
-  my $foundDirectory = _GetHandlerPath($handler_name);
+  my $foundDirectory = _Get_Handler_Path($handler_name);
   return undef unless defined $foundDirectory;
 
-  dprint "Found local copy of handler in:\n  $foundDirectory";
+  dprint "Found local copy of handler $handler_name in:\n  $foundDirectory";
 
   open LOCALHANDLER, "$foundDirectory/$handler_name.pm";
   my $localHandler = join '',<LOCALHANDLER>;
@@ -536,80 +599,72 @@ sub _GetLocalHandlerVersion($)
 
 # ------------------------------------------------------------------------------
 
-# This routine restricts the personal version to 5 built-in handlers and 5
-# optional ones. It dies if the user is trying to use more than their
-# registration allows.
+# This routine restricts the trial version to use only the yahootopstories
+# handler, and restricts the personal versions to use only the number of
+# handlers they have registered to use. It dies if the user is trying to use
+# more than their registration allows.
 
-sub _CheckRegistrationRestriction($)
+sub _Check_Registration_Restriction($)
 {
   my $handler_name = shift;
 
   dprint "Checking if handler \"$handler_name\" is okay to use.";
 
-  return if ($main::config{product} ne 'Personal') &&
-            ($main::config{product} ne 'Trial');
+  return if ($config{product} ne 'Personal') &&
+            ($config{product} ne 'Trial');
 
   # Skip this handler if we've already processed it.
-  if (grep { /^$handler_name$/i } @allowedHandlers)
+  if (grep { /^$handler_name$/i } @ALLOWED_HANDLERS)
   {
     dprint "Skipping already checked handler \"$handler_name\".";
     return;
   }
 
-  push @allowedHandlers,$handler_name;
-
-  unless (_IsAcquisitionHandler($handler_name))
+  if (!_Is_Acquisition_Handler($handler_name))
   {
     dprint "$handler_name isn't an acquisition handler -- okay to use.";
+    push @ALLOWED_HANDLERS,$handler_name;
+
     return;
   }
 
-  # Yell if they have the trial version and are doing any acquisition handler
-  # other than yahootopstories
+  # Trial version can only use yahootopstories
   if ($config{product} eq 'Trial')
   {
-    if ($handler_name ne 'yahootopstories')
+    if ($handler_name eq 'yahootopstories')
+    {
+      push @ALLOWED_HANDLERS,$handler_name;
+      return;
+    }
+    else
     {
       die reformat dequote <<"      EOF";
         You can not use the "$handler_name" handler. The trial version of News
         Clipper only allows you to use the yahootopstories handler.
       EOF
     }
-
-    return;
   }
+
+  # Now process personal licenses
 
   my @installedHandlers;
 
-  dprint "Counting number of installed handlers.";
-
   foreach my $dir (@INC)
   {
-    if (-d "$dir/NewsClipper/Handler/Acquisition")
-    {
-      # Gets all .pm files in $dir. Puts them in @handlers
-      my @handlers;
-      find(sub {push @handlers,"$File::Find::name"
-          if /\.pm$/i},"$dir/NewsClipper/Handler/Acquisition");
-
-      foreach my $handler (@handlers)
-      {
-        push @installedHandlers, $handler;
-      }
-    }
+    push @installedHandlers, glob("$dir/NewsClipper/Handler/Acquisition/*.pm");
   }
 
   dprint $#installedHandlers+1," total acquisition handlers found.";
 
   # Yell if they have more than the registered number of handlers on their
   # system.
-  if ($#installedHandlers+1 > $config{numberhandlers})
+  if ($#installedHandlers+1 > $config{number_handlers})
   {
     local $" = "\n";
     warn reformat dequote <<"    EOF";
       You currently have more than the allowed number of handlers on your
       system.  This personal version of News Clipper is only registered to
-      used $config{numberhandlers} handlers.
+      use $config{number_handlers} handlers.
 
       Please delete one or more of the following files:
     EOF
@@ -618,15 +673,16 @@ sub _CheckRegistrationRestriction($)
 
   # Yell if they have the registered number of handlers on their system, and
   # the current handler isn't one of them.
-  if (($#installedHandlers+1 == $config{numberhandlers}) &&
+  if (($#installedHandlers+1 == $config{number_handlers}) &&
       (!grep {/$handler_name.pm$/} @installedHandlers))
   {
     local $" = "\n";
     warn reformat dequote <<"    EOF";
-      You currently have $config{numberhandlers} handlers on your
-      system, and are trying to use a handler that is not one of these five
+      You currently have $config{number_handlers} handlers on your
+      system, and are trying to use a handler that is not one of these
+      $config{number_handlers}
       ($handler_name). This personal version of News Clipper is only registered
-      to use $config{numberhandlers} handlers.
+      to use $config{number_handlers} handlers.
 
       Please delete one or more of the following files if you want to be able
       to use this handler:
@@ -639,125 +695,50 @@ sub _CheckRegistrationRestriction($)
 
 # Checks to see if a handler is an acquisition handler. First it looks
 # locally, then checks the list of remote acquisition handlers. Dies (in
-# _GetRemoteHandlerType) if the handler is not installed locally and the
+# Server::Get_Handler_Type) if the handler is not installed locally and the
 # handler type can not be determined from the server.
 
-sub _IsAcquisitionHandler
+sub _Is_Acquisition_Handler
 {
   my $handler_name = shift;
 
   # First look locally
-  my $loadResult = _LoadHandler($handler_name);
+  my $loadResult = _Load_Handler($handler_name);
 
-  my $is_acquisition_handler = 0;
-
-  if ($loadResult =~ /(Acquisition|Filter|Output)/s)
+  if ($loadResult =~ /^found/)
   {
-    $is_acquisition_handler = 1 if $1 eq 'Acquisition';
+    if ($loadResult =~ /Acquisition/)
+    {
+      return 1;
+    }
+    else
+    {
+      return 0;
+    }
   }
   else
   {
-    $is_acquisition_handler = 1
-      if _GetRemoteHandlerType($handler_name) eq 'Acquisition';
-  }
+    my ($remoteStatus,$remoteResult) = $SERVER->Get_Handler_Type($handler_name);
 
-  return $is_acquisition_handler;
-}
+    if ($remoteStatus == 0)
+    {
+      die reformat dequote <<"      EOF"
+        Couldn't download the handler type for handler $handler_name. Maybe
+        the server is down. This version of News Clipper can only use a limited
+        number of acquisition handlers, and must contact the server to determine
+        if the handler is an acquisition handler. Try again in a while, and send
+        email to bugreport\@newsclipper.com if the problem persists.
+      EOF
+    }
 
-# ------------------------------------------------------------------------------
-
-# This routine checks that a handler on the system is for the current version
-# of News Clipper. Returns 1 if the handler is compatible, 0 if it is not, and
-# undef if it wasn't found.
-
-sub _HandlerVersionIsCompatible($)
-{
-  my $handler_name = shift;
-
-  dprint "Checking if handler \"$handler_name\" is of a compatible version.";
-
-  # Skip this handler if we've already processed it.
-  if (grep { /^$handler_name$/i } @compatibleHandlers)
-  {
-    dprint reformat (65,
-      "Skipping handler \"$handler_name\" (already checked compatibility).");
-    return;
-  }
-
-  push @compatibleHandlers,$handler_name;
-
-  my $local_handler_nc_version = _GetLocalHandlerNCVersion($handler_name);
-  return undef unless defined $local_handler_nc_version;
-
-  dprint reformat (65,dequote <<"  EOF");
-    Handler "$handler_name" was written for News Clipper version 
-    $local_handler_nc_version, and this version of News Clipper is
-    compatible with version $COMPATIBLE_NEWS_CLIPPER_VERSION.
-  EOF
-
-  if ($local_handler_nc_version != $COMPATIBLE_NEWS_CLIPPER_VERSION)
-  {
-    $errors{"handler#$handler_name"} = reformat dequote <<"    EOF";
-       Handler $handler_name is incompatible with this version of News Clipper.
-       (The handler is compatible with News Clipper versions that take handlers
-       from version $local_handler_nc_version, but this version of News Clipper
-       uses handlers from version $COMPATIBLE_NEWS_CLIPPER_VERSION).
-    EOF
-    return 0;
-  }
-  else
-  {
-    return 1;
-  }
-}
-
-# ------------------------------------------------------------------------------
-
-# Download the handler type from the remote server, caching it locally in
-# %handler_type. Dies with a message if the server can't be contacted, or the
-# returned data can't be parsed.
-
-sub _GetRemoteHandlerType
-{
-  my $handler_name = shift;
-
-  if (exists $handler_type{$handler_name})
-  {
-    dprint "Reusing cached handler type information " .
-      "($handler_name is $handler_type{$handler_name})";
-    return $handler_type{$handler_name};
-  }
-
-  dprint "Downloading handler type information.\n";
-
-  my $url = "http://" . $HANDLER_SERVER .
-    "/cgi-bin/getinfo?field=Name&string=$handler_name&" .
-    "print=Type&ncversion=$main::VERSION";
-
-  my $data = _DownloadURL($url);
-
-  die reformat dequote <<"  EOF"
-    Couldn't download the handler type for handler $handler_name. Maybe
-    the server is down. This version of News Clipper can only use a limited
-    number of acquisition handlers, and must contact the server to determine
-    if the handler is an acquisition handler. Try again in a while, and send
-    email to bugreport\@newsclipper.com if the problem persists.
-  EOF
-    unless defined $data;
-
-  if ($$data =~ /Type +: (.*)/)
-  {
-    $handler_type{$handler_name} = $1;
-    return $handler_type{$handler_name};
-  }
-  else
-  {
-    die reformat dequote <<"    EOF";
-ERROR: Couldn't parse handler type information fetched from server. Please
-send email to bugreport\@newsclipper.com describing this message. Fetched
-content was:
-$$data
-    EOF
+    if ($remoteResult eq 'Acquisition')
+    {
+      return 1;
+    }
+    else
+    {
+      return 0;
+    }
   }
 }
 
@@ -766,12 +747,12 @@ $$data
 # Figure out where the handler is in the file system. Returns undef if not
 # found.
 
-sub _GetHandlerPath($)
+sub _Get_Handler_Path($)
 {
   my $handler_name = shift;
 
   # Try to load the handler so we can figure out where to put the replacement
-  my $loadResult = _LoadHandler($handler_name);
+  my $loadResult = _Load_Handler($handler_name);
 
   if ($loadResult eq 'not found')
   {
@@ -799,7 +780,7 @@ sub _GetHandlerPath($)
 # "Unloads" a handler by deleting the entry in %INC and undefining any
 # subroutines.
 
-sub _UnLoadHandler($)
+sub _Unload_Handler($)
 {
   my $handler_name = shift;
 
@@ -815,9 +796,7 @@ sub _UnLoadHandler($)
   $handler_type = 'Output'
     if exists $INC{"NewsClipper/Handler/Output/$handler_name.pm"};
 
-  die "_UnLoadHandler called on $handler_name, but $handler_name is not " .
-    "in %INC\n"
-    unless defined $handler_type;
+  return unless defined $handler_type;
 
   # Delete it from %INC
   delete $INC{"NewsClipper/Handler/$handler_type/$handler_name.pm"};
@@ -838,7 +817,7 @@ sub _UnLoadHandler($)
 # system, and "not found" if it can't be found.  Dies if the handler is found
 # but has errors.
 
-sub _LoadHandler($)
+sub _Load_Handler($)
 {
   my $handler_name = shift;
 
@@ -867,7 +846,7 @@ sub _LoadHandler($)
     {
       local $SIG{__WARN__} = sub { $errors .= $_[0] };
 
-      eval "require NewsClipper::Handler::${dir}::$handler_name";
+      eval "require \"NewsClipper/Handler/${dir}/$handler_name.pm\"";
     }
 
 # At this point, the possibilities are:
@@ -927,17 +906,18 @@ sub _LoadHandler($)
 # This function downloads and saves a remote handler, if one exists. Returns
 # 'okay', 'not found', or 'failed: error message'
 
-sub _DownloadHandler($$)
+sub _Download_Handler_By_Version($$)
 {
   my $handler_name = shift;
   my $version = shift;
 
   dprint "Downloading handler $handler_name, version $version";
 
-  my ($getResult,$code) = _GetHandlerCode($handler_name,$version);
+  my ($getResult,$code) = $SERVER->Get_Handler($handler_name,$version,
+    $COMPATIBLE_NEWS_CLIPPER_VERSION);
   return $getResult if $getResult ne 'okay';
 
-  my $foundDirectory = _GetHandlerPath($handler_name);
+  my $foundDirectory = _Get_Handler_Path($handler_name);
 
   # Use the old directory, or create a new one based on what the handler calls
   # itself.
@@ -969,8 +949,8 @@ sub _DownloadHandler($$)
   print HANDLER $code;
   close HANDLER;
 
-  warn "The $handler_name handler has been downloaded and saved as\n";
-  warn "  $destDirectory/$handler_name.pm\n";
+  lprint "The $handler_name handler has been downloaded and saved as\n";
+  lprint "  $destDirectory/$handler_name.pm\n";
 
   # Figure out if the handler needs any other modules.
   my @uses = $code =~ /\nuse (.*?);/g;
@@ -979,310 +959,15 @@ sub _DownloadHandler($$)
 
   if ($#uses != -1)
   {
-    warn "The handler uses the following modules:\n";
+    lprint "The handler uses the following modules:\n";
     $" = "\n  ";
-    warn "  @uses\n";
-    warn "Make sure you have them installed.\n";
+    lprint "  @uses\n";
+    lprint "Make sure you have them installed.\n";
   }
 
   return 'okay';
 }
 
 # ------------------------------------------------------------------------------
-
-# This function downloads a new handler from the handler database.  The first
-# argument is the name of the handler. The second argument is the version
-# number of the current handler. You should call _GetNewHandlerVersion before
-# calling this function.
-
-# This function returns two values:
-# - an error code: (okay, not found, failed: error message)
-# - the handler (if the error code is okay)
-
-sub _GetHandlerCode($$)
-{
-  my $handler_name = shift;
-  my $version = shift;
-
-  dprint "Downloading code for handler \"$handler_name\"";
-
-  if (defined $downloadedCode{$handler_name})
-  {
-    dprint "Reusing already downloaded code.";
-    return ('okay',$downloadedCode{$handler_name});
-  }
-
-  my $url;
-
-  $url = "http://" . $HANDLER_SERVER .
-         "/cgi-bin/gethandler?tag=$handler_name&" .
-         "ncversion=$main::VERSION&version=$version";
-
-  my $data = _DownloadURL($url);
-
-  if (defined $data && $$data =~ /^Handler not found/)
-  {
-    return ('not found',undef);
-  }
-
-  # If either the download failed, or the thing we got back doesn't look like
-  # a handler...
-  if ((!defined $data) || ($$data !~ /package NewsClipper/))
-  {
-    my $error_message = reformat dequote <<"    EOF";
-      failed: Couldn't download handler $handler_name. Maybe the server is
-      down. Try again in a while, and send email to bugreport\@newsclipper.com
-      if the problem persists.
-    EOF
-
-    $error_message .= " Message from server is: $$data\n" if defined $data;
-
-    return ($error_message,undef);
-  }
-
-  $downloadedCode{$handler_name} = $$data;
-
-  return ('okay',$$data);
-}
-
-# ------------------------------------------------------------------------------
-
-my $dbh = undef;
-
-# Connect to the database, storing the DB connection in $dbh for the
-# duration of the run
-
-sub ConnectToDB
-{
-  return $dbh if defined $dbh;
-
-  require DBI;
-
-  local $SIG{ALRM} = sub { die "database timeout" };
-
-  my $numTriesLeft = $config{socket_tries};
-
-  do
-  {
-    eval
-    {
-      alarm($config{socket_tries});
-
-      $dbh = DBI->connect('DBI:mysql:handlers:handlers.newsclipper.com','webuser')
-        || die "Can't connect to database: $DBI::errstr";
-
-      alarm(0);
-    };
-
-    $numTriesLeft--;
-  } until ($numTriesLeft == 0 || defined $dbh);
-
-  alarm(0);
-}
-
-# ------------------------------------------------------------------------------
-
-# Disconnect from the database.
-
-sub DisconnectFromDB
-{
-  $dbh->disconnect() if defined $dbh;
-}
-
-# ------------------------------------------------------------------------------
-
-sub _GetTable
-{
-  my $version = shift;
-
-  my $table = $version;
-  $table =~ s/\./_/g;
-
-  return $table;
-}
-
-# ------------------------------------------------------------------------------
-
-# Computes the most recent version number for a working handler.
-# Returns undef if the handler can't be found.
-
-sub _GetLatestWorkingHandlerVersion
-{
-  my $handler_name = shift;
-  my $ncversion = shift;
-
-  my $table = _GetTable($ncversion);
-
-  my $query = qq{ SELECT Version FROM $table WHERE Name like '$handler_name'
-    and Status like 'Working'
-    ORDER BY Version DESC };
-
-dprint "_GetLatestWorkingHandlerVersion is doing query:";
-dprint "  ".$query;
-  return scalar $dbh->selectrow_array($query);
-}
-
-# ------------------------------------------------------------------------------
-
-# Computes the most recent guaranteed-compatible version number for a
-# workinghandler.  Returns undef if the handler can't be found.
-
-sub _GetCompatibleWorkingHandlerVersion
-{
-  my $handler_name = shift;
-  my $ncversion = shift;
-  my $version = shift;
-
-  my $table = _GetTable($ncversion);
-
-  # Truncate to two decimal places, and increment the hundredths place so we
-  # can query for < $version
-  my $lower_version = sprintf("%0.2f",int($version * 100)/100);
-  my $upper_version = sprintf("%0.2f",int($version * 100)/100 + .01);
-
-  my $query = qq{ SELECT Version FROM $table WHERE Name like '$handler_name'
-    and Status like 'Working'
-    and Version < $upper_version and Version >= $lower_version
-    ORDER BY Version DESC };
-
-  return scalar $dbh->selectrow_array($query);
-}
-
-# ------------------------------------------------------------------------------
-
-# Checks if a new version of the handler is available, taking consideration of
-# -n flag into account.
-# Params:
-# 1) the handler name
-# 2) whether you want only a bugfix update, not a functional update too
-#    ('bugfix','functional')
-# Returns:
-# 1) status: okay, failed, not found, no update
-# 2) the version
-# 3) type of update it is ("bugfix" or "functional")
-#    if $needBugfix == 0, type can be either bugfix or functional.
-#    if $needBugfix == 1, type can be only bugfix.
-
-my $alreadyFailed = 0;
-
-sub _GetNewHandlerVersion($$)
-{
-  my $handler_name = shift;
-  my $needBugfix = shift;
-
-  return 'failed' if $alreadyFailed;
-
-  dprint "Checking for a new version for handler \"$handler_name\"";
-
-  # A version of undef means that we want whatever the newest version is,
-  # regardless of functional compatibility.
-  my $localVersion = _GetLocalHandlerVersion($handler_name);
-
-
-  ConnectToDB();
-
-  unless (defined $dbh)
-  {
-    $alreadyFailed = 1;
-    return 'failed';
-  }
-
-  unless (defined _GetLatestWorkingHandlerVersion($handler_name,$COMPATIBLE_NEWS_CLIPPER_VERSION))
-  {
-    dprint "Server reports that handler \"$handler_name\" doesn't exist.\n";
-    return 'not found';
-  }
-
-  my $newVersion;
-
-  if ($needBugfix eq 'bugfix')
-  {
-    $newVersion = _GetCompatibleWorkingHandlerVersion($handler_name,
-      $COMPATIBLE_NEWS_CLIPPER_VERSION, $localVersion);
-  }
-  else
-  {
-    $newVersion = _GetLatestWorkingHandlerVersion($handler_name,$COMPATIBLE_NEWS_CLIPPER_VERSION);
-  }
-
-  if (!defined $newVersion ||
-     ( defined $localVersion && $newVersion <= $localVersion))
-  {
-    dprint "No new version is available";
-    return 'no update';
-  }
-
-  # We actually got a version
-  my $updateType;
-
-  if (defined $localVersion)
-  {
-    if (int($newVersion * 100) == int($localVersion * 100))
-    {
-      $updateType = 'bugfix';
-    }
-    else
-    {
-      $updateType = 'functional';
-    }
-
-    dprint "A new version is available.\n  New version:$newVersion " .
-      "Old version: $localVersion Update type: $updateType\n";
-  }
-  else
-  {
-    $updateType = 'functional';
-
-    dprint "A new version is available.\n  New version:$newVersion " .
-      "Old version: <NONE FOUND> Update type: $updateType\n";
-  }
-
-  return ('okay',$newVersion,$updateType);
-}
-
-# ------------------------------------------------------------------------------
-
-# Gets the entire content from a URL. file:// supported
-
-sub _DownloadURL($)
-{
-  my $url = shift;
-
-  dprint "Downloading URL:";
-  dprint "  $url";
-
-  $userAgent->timeout($config{socket_timeout});
-  $userAgent->proxy(['http', 'ftp'], $config{proxy})
-    if $config{proxy} ne '';
-  my $request = new HTTP::Request GET => "$url";
-  if ($config{proxy_username} ne '')
-  {
-    $request->proxy_authorization_basic($config{proxy_username},
-                     $config{proxy_password});
-  }
-
-  my $result;
-  my $numTriesLeft = $config{socket_tries};
-
-  do
-  {
-    $result = $userAgent->request($request);
-    $numTriesLeft--;
-  } until ($numTriesLeft == 0 || $result->is_success);
-
-  return undef unless $result->is_success;
-
-  my $content = $result->content;
-
-  # Strip linefeeds off the lines
-  $content =~ s/\r//gs;
-
-  return \$content;
-}
-
-END
-{
-  DisconnectFromDB();
-}
 
 1;
